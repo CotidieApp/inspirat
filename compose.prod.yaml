@@ -1,0 +1,42 @@
+name: inspirat-production
+services:
+  api:
+    build: ./backend
+    env_file: ${INSPIRAT_ENV_FILE:-.env}
+    expose: ["8000"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    env_file: ${INSPIRAT_ENV_FILE:-.env}
+    depends_on:
+      - redis
+    restart: always
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      INSPIRAT_DOMAIN: ${INSPIRAT_DOMAIN}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [api]
+    restart: always
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redis_data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: always
+volumes:
+  redis_data:
+  caddy_data:
+  caddy_config:

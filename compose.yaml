@@ -1,0 +1,101 @@
+name: inspirat
+services:
+  api:
+    build: ./backend
+    environment:
+      INSPIRAT_ENV: development
+      INSPIRAT_SECRET_KEY: ${INSPIRAT_SECRET_KEY:-development-only-change-this-secret-key}
+      INSPIRAT_DATABASE_URL: postgresql+psycopg://inspirat:${POSTGRES_PASSWORD:-inspirat_dev}@postgres:5432/inspirat
+      INSPIRAT_REDIS_URL: redis://redis:6379/0
+      INSPIRAT_S3_ENDPOINT: http://minio:9000
+      INSPIRAT_SMTP_HOST: mailpit
+      INSPIRAT_SMTP_PORT: 1025
+      INSPIRAT_SMTP_USE_TLS: "false"
+      INSPIRAT_CORS_ORIGINS: http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    environment:
+      INSPIRAT_ENV: development
+      INSPIRAT_DATABASE_URL: postgresql+psycopg://inspirat:${POSTGRES_PASSWORD:-inspirat_dev}@postgres:5432/inspirat
+      INSPIRAT_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: inspirat
+      POSTGRES_USER: inspirat
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-inspirat_dev}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inspirat -d inspirat"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-inspirat_dev}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-inspirat-minio-dev-password}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9001:9001"
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >
+        until mc alias set local http://minio:9000
+        ${MINIO_ROOT_USER:-inspirat_dev}
+        ${MINIO_ROOT_PASSWORD:-inspirat-minio-dev-password}; do sleep 2; done;
+        mc mb --ignore-existing local/inspirat;
+        mc anonymous set none local/inspirat
+    restart: "no"
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
