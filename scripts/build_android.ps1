@@ -2,6 +2,10 @@ param(
     [string]$ApiBaseUrl = "http://192.168.4.200:8000/api/v1",
     [string]$Flavor = "dev",
     [switch]$Release,
+    # El DSN de Sentry no es un secreto (esta pensado para vivir en el
+    # cliente); solo se activa fuera del flavor dev para no mezclar ruido de
+    # pruebas locales con errores reales de usuarios.
+    [string]$SentryDsn = "https://23f9a153afdf214bac91f8c1dd17471e@o4511808810450944.ingest.us.sentry.io/4511808828145664",
     [string]$Destination = (
         "G:\Mi unidad\insp{0}raT\Installer APK v2" -f [char]0x00ED
     )
@@ -74,7 +78,8 @@ try {
         # selector de servidor http:// sin cifrar a usuarios reales.
         throw "DEV_BUILD no puede ser true para el flavor '$Flavor'."
     }
-    & $flutter build apk "--$buildMode" --flavor $Flavor "--dart-define=API_BASE_URL=$ApiBaseUrl" "--dart-define=DEV_BUILD=$devBuildFlag"
+    $sentryDsnDefine = if ($Flavor -eq "dev") { "" } else { $SentryDsn }
+    & $flutter build apk "--$buildMode" --flavor $Flavor "--dart-define=API_BASE_URL=$ApiBaseUrl" "--dart-define=DEV_BUILD=$devBuildFlag" "--dart-define=SENTRY_DSN=$sentryDsnDefine"
     if ($LASTEXITCODE -ne 0) {
         throw "La compilación Android falló con código $LASTEXITCODE"
     }

@@ -8,6 +8,33 @@ Historial de intervenciones del asistente en el repo.
 - Esta obligacion aplica aunque el usuario pida tocar solo lo estrictamente necesario: el registro en `AGENTS.md` se considera parte estrictamente necesaria de cualquier edicion del repo.
 - Si una instruccion del usuario prohibe explicitamente editar `AGENTS.md`, el agente debe pedir aclaracion antes de modificar otros archivos.
 
+### [2026-07-27] 6. Sentry (crash reporting), UptimeRobot y bug de build con plugins Kotlin nativos
+
+**Planificacion:**
+- El usuario ya tenia cuenta de Sentry y UptimeRobot; configuro UptimeRobot el mismo apuntando a `/ready` (confirmado con captura: "Up", 100% ultimas 24h). Para Sentry creo el proyecto (`inspirat`, plataforma Flutter) y paso el DSN para que se integrara en codigo.
+- Discusion aparte sobre Resend: sin dominio propio verificado, Resend (como cualquier proveedor serio) no deja enviar a destinatarios arbitrarios — no es una limitacion arbitraria de Resend, es politica anti-spam estandar de la industria. Se descarto SMS/telefono como alternativa (cuesta dinero por mensaje, a diferencia de correo) y se sugirio como alternativa gratuita usar el propio Gmail del usuario como relay SMTP (no necesita dominio propio) — pendiente de que el usuario decida y entregue una contraseña de aplicacion de Google.
+
+**Ejecucion:**
+- `mobile/pubspec.yaml`: se agrego `sentry_flutter`. `mobile/lib/main.dart`: si `--dart-define=SENTRY_DSN` viene vacio (builds sin esa define, ej. desarrollo) se mantiene el `runZonedGuarded` manual de la entrada anterior; si viene con valor, se usa `SentryFlutter.init(..., appRunner: ...)` (que instala sus propios `FlutterError.onError`/`PlatformDispatcher.onError` — no se reasignan a mano para no pisarlos) con `beforeSend` enganchado al mismo `reportError()` de siempre, asi el log local sigue funcionando ademas de mandarse a Sentry.
+- `scripts/build_android.ps1`: nuevo parametro `-SentryDsn` (default = el DSN real del proyecto, no es secreto) que solo se pasa como dart-define para flavors distintos de `dev` (para no mezclar ruido de pruebas locales con errores reales).
+- **Bug real encontrado al compilar con Sentry activo**: el build de release fallo con `Execution failed for task ':package_info_plus:compileReleaseKotlin'` — el compilador de Kotlin no podia relativizar rutas entre el pub cache real (`C:\Users\...\Pub\Cache\...`) y la unidad SUBST (`I:\...`) que usa el script para esquivar el bug de rutas no-ASCII en Windows, porque `sentry_flutter` y su dependencia `package_info_plus` traen codigo Kotlin nativo (aplican el Kotlin Gradle Plugin directamente) — el proyecto no tenia ningun plugin asi antes. Se corrigio agregando `kotlin.incremental=false` a `mobile/android/gradle.properties` (documentado el porque en un comentario ahi mismo); con eso el compilador ya no necesita relativizar esas rutas para las caches incrementales.
+- Se verifico el DSN de verdad: se instalo `sentry-sdk` (Python) en un venv desechable (no se toco el venv del proyecto ni pyproject.toml) y se mando una excepcion de prueba real al DSN — Sentry la acepto sin error (event_id `e4e014ab43544d30b88b3f286de3c7b5`). Confirma que el DSN es valido antes de gastar tiempo compilando el APK completo.
+- `docs/ANDROID.md`: nueva seccion "Reporte de errores (Sentry)" explicando el mecanismo de activacion via dart-define y por que existe `kotlin.incremental=false`; comandos manuales de build actualizados con el dart-define de Sentry.
+
+**Validacion:**
+- `flutter analyze` limpio y `flutter test` 20/20 (sin cambios de resultado) tras agregar la dependencia.
+- Build real de release (`-Flavor prod -Release`) exitoso tras el fix de `kotlin.incremental` — fallo una vez (el bug de arriba), paso en el reintento. Firma verificada con `apksigner` (`CN=inspiraT`, la clave real, no debug).
+- Build real de dev (`-Flavor dev`, sin parametros) tambien exitoso con `kotlin.incremental=false` — confirma que el fix no rompe el flujo existente.
+- APK publico final recompilado y copiado a `G:\Mi unidad\inspíraT\Installer APK v2\inspirat-0.1.0-prod-release.apk` con Sentry activo.
+
+**Archivos Modificados:**
+- `mobile/pubspec.yaml`, `mobile/pubspec.lock`
+- `mobile/lib/main.dart`
+- `mobile/android/gradle.properties`
+- `scripts/build_android.ps1`
+- `docs/ANDROID.md`
+- AGENTS.md
+
 ### [2026-07-27] 5. Auditoria completa (backend/mobile/infra) y correccion de hallazgos reales
 
 **Planificacion:**

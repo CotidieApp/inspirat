@@ -72,13 +72,16 @@ Compila la version publica contra la API real con el script integrado:
   -Flavor prod -Release
 ```
 
-O manualmente:
+O manualmente (el DSN de Sentry no es secreto, ver seccion "Reporte de
+errores" mas abajo):
 
 ```powershell
 flutter build apk --release --flavor prod `
-  --dart-define=API_BASE_URL=https://inspirat-api.onrender.com/api/v1
+  --dart-define=API_BASE_URL=https://inspirat-api.onrender.com/api/v1 `
+  --dart-define=SENTRY_DSN=https://23f9a153afdf214bac91f8c1dd17471e@o4511808810450944.ingest.us.sentry.io/4511808828145664
 flutter build appbundle --release --flavor prod `
-  --dart-define=API_BASE_URL=https://inspirat-api.onrender.com/api/v1
+  --dart-define=API_BASE_URL=https://inspirat-api.onrender.com/api/v1 `
+  --dart-define=SENTRY_DSN=https://23f9a153afdf214bac91f8c1dd17471e@o4511808810450944.ingest.us.sentry.io/4511808828145664
 ```
 
 Salidas esperadas:
@@ -89,6 +92,27 @@ Salidas esperadas:
 Verifica la firma con `apksigner verify --print-certs <apk>`: debe mostrar
 `CN=inspiraT`, no el certificado de depuracion de Android. Incrementa
 `version` en `pubspec.yaml` (`versionName+versionCode`) en cada publicacion.
+
+## Reporte de errores (Sentry)
+
+`mobile/lib/main.dart` activa Sentry solo si recibe
+`--dart-define=SENTRY_DSN=...` (el script lo pasa automaticamente para
+cualquier flavor distinto de `dev`, usando el DSN real del proyecto
+`inspirat` en Sentry como valor por defecto del parametro `-SentryDsn`). Sin
+esa define — como en desarrollo — solo queda el logging local
+(`debugPrint`) que ya existia antes de Sentry. El DSN no es un secreto: esta
+pensado para vivir embebido en el cliente, a diferencia de una API key de
+servidor.
+
+`mobile/android/gradle.properties` tiene `kotlin.incremental=false`: sin
+eso, el compilador de Kotlin revienta al cerrar sus caches incrementales
+cuando hay plugins con codigo Kotlin nativo (como `sentry_flutter` y
+`package_info_plus`, que Sentry trae como dependencia) corriendo desde la
+unidad SUBST que usa este script para esquivar el bug de rutas no ASCII en
+Windows — la ruta real del paquete en el pub cache (`C:\...`) y la ruta
+SUBST del build (`I:\...`) no comparten raiz. No se debe quitar esa linea
+mientras el proyecto siga usando plugins con Kotlin nativo y siga
+compilando desde una ruta con tilde.
 
 Si en el futuro se quiere publicar en Google Play, el `.aab` (no el `.apk`) es
 lo que pide la Play Console, y falta ademas: cuenta de desarrollador (pago
