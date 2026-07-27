@@ -7,9 +7,12 @@
   El plan Free "duerme" tras inactividad (la primera petición después puede
   tardar ~50s).
 - **Base de datos**: Supabase Postgres, pooler en modo *session* (puerto 5432).
-- **Correo saliente**: Resend vía relay SMTP. Mientras no se verifique un
-  dominio propio en Resend, solo se puede enviar al correo de la cuenta
-  Resend (remitente `onboarding@resend.dev`).
+- **Correo saliente**: Gmail (`inspiratapp@gmail.com`) vía relay SMTP, con una
+  contraseña de aplicación de Google (no la contraseña normal de la cuenta).
+  Cambiado desde Resend el 2026-07-27: Resend exige dominio propio verificado
+  para enviar a destinatarios que no sean el dueño de la cuenta, y no hay
+  presupuesto para comprar uno; Gmail no tiene esa restricción. Límite
+  informal de Gmail: ~500 envíos/día, de sobra para el volumen actual.
 - **Worker**: no desplegado. Hoy no hace nada real (revisa `app/worker.py`);
   desplegarlo cuando exista una tarea real que procesar.
 - **Redis**: no desplegado. Nada en el código de la API lo usa todavía; solo
@@ -69,16 +72,23 @@ conexión (nunca en logs, nunca commiteada).
 ## Correo saliente real
 
 Mailpit es solo para desarrollo. En producción se usa un proveedor SMTP real
-(hoy Resend) en el `.env`:
+(hoy Gmail, cuenta `inspiratapp@gmail.com`) en el `.env`:
 
 ```text
-INSPIRAT_SMTP_HOST=smtp.resend.com
+INSPIRAT_SMTP_HOST=smtp.gmail.com
 INSPIRAT_SMTP_PORT=587
 INSPIRAT_SMTP_USE_TLS=true
-INSPIRAT_SMTP_USERNAME=resend
-INSPIRAT_SMTP_PASSWORD=...
-INSPIRAT_SMTP_FROM_EMAIL=onboarding@resend.dev
+INSPIRAT_SMTP_USERNAME=inspiratapp@gmail.com
+INSPIRAT_SMTP_PASSWORD=...  # contraseña de aplicacion, no la contraseña normal
+INSPIRAT_SMTP_FROM_EMAIL=inspiratapp@gmail.com
 ```
+
+`INSPIRAT_SMTP_PASSWORD` es una "contraseña de aplicación" generada en
+`myaccount.google.com/apppasswords` (requiere verificación en 2 pasos
+activada en la cuenta de Google) — no funciona con la contraseña normal de
+la cuenta. Si Resend consigue en el futuro un dominio propio verificado,
+puede volver a usarse siguiendo el mismo patrón (host/usuario/password
+distintos, resto del código sin cambios).
 
 Sin esto, `POST /auth/password/forgot` sigue respondiendo con éxito (para no
 revelar si la cuenta existe) pero el correo con el código nunca sale; queda
