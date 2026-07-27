@@ -66,7 +66,8 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "No se pudo limpiar la compilación Android anterior."
     }
-    & $flutter build apk "--$buildMode" --flavor $Flavor "--dart-define=API_BASE_URL=$ApiBaseUrl"
+    $devBuildFlag = if ($Flavor -eq "dev") { "true" } else { "false" }
+    & $flutter build apk "--$buildMode" --flavor $Flavor "--dart-define=API_BASE_URL=$ApiBaseUrl" "--dart-define=DEV_BUILD=$devBuildFlag"
     if ($LASTEXITCODE -ne 0) {
         throw "La compilación Android falló con código $LASTEXITCODE"
     }

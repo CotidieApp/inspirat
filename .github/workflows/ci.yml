@@ -27,7 +27,7 @@ jobs:
       - working-directory: mobile
         run: flutter test
       - working-directory: mobile
-        run: flutter build apk --debug --flavor dev --dart-define=API_BASE_URL=http://10.0.2.2:8000/api/v1
+        run: flutter build apk --debug --flavor dev --dart-define=API_BASE_URL=http://10.0.2.2:8000/api/v1 --dart-define=DEV_BUILD=true
       - uses: actions/upload-artifact@v4
         with:
           name: inspirat-debug-apk

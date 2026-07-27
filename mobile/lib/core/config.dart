@@ -4,6 +4,7 @@ abstract final class AppConfig {
   static const packageId = 'com.inspirat.app';
   static const apiBaseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://10.0.2.2:8000/api/v1',
+    defaultValue: 'https://inspirat-api.onrender.com/api/v1',
   );
+  static const isDevBuild = bool.fromEnvironment('DEV_BUILD');
 }

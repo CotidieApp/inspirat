@@ -10,11 +10,13 @@ añade `.dev`; `prod` conserva el identificador final.
 cd mobile
 flutter pub get
 flutter devices
-flutter run --flavor dev --dart-define=API_BASE_URL=http://10.0.2.2:8000/api/v1
+flutter run --flavor dev --dart-define=API_BASE_URL=http://10.0.2.2:8000/api/v1 --dart-define=DEV_BUILD=true
 ```
 
 `10.0.2.2` es el host desde el emulador Android. El flavor de desarrollo admite
-HTTP local; producción no habilita tráfico sin cifrar.
+HTTP local; producción no habilita tráfico sin cifrar. `DEV_BUILD=true` es lo
+que muestra el selector "Configurar conexión al servidor" en la app — sin
+esa define queda oculto (así se compila la versión pública real).
 
 ## Teléfono físico
 
@@ -22,14 +24,15 @@ Activa depuración USB, acepta la clave del equipo, confirma `flutter devices` y
 usa la IP LAN del servidor:
 
 ```powershell
-flutter run --flavor dev --dart-define=API_BASE_URL=http://192.168.1.50:8000/api/v1
+flutter run --flavor dev --dart-define=API_BASE_URL=http://192.168.1.50:8000/api/v1 --dart-define=DEV_BUILD=true
 ```
 
 ## APK de depuración
 
 ```powershell
 flutter build apk --debug --flavor dev `
-  --dart-define=API_BASE_URL=http://10.0.2.2:8000/api/v1
+  --dart-define=API_BASE_URL=http://10.0.2.2:8000/api/v1 `
+  --dart-define=DEV_BUILD=true
 ```
 
 Salida: `mobile/build/app/outputs/flutter-apk/app-dev-debug.apk`.

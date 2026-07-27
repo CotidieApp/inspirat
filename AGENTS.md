@@ -8,6 +8,31 @@ Historial de intervenciones del asistente en el repo.
 - Esta obligacion aplica aunque el usuario pida tocar solo lo estrictamente necesario: el registro en `AGENTS.md` se considera parte estrictamente necesaria de cualquier edicion del repo.
 - Si una instruccion del usuario prohibe explicitamente editar `AGENTS.md`, el agente debe pedir aclaracion antes de modificar otros archivos.
 
+### [2026-07-26] 4. Auditoria de UI para la version publica: ocultar herramientas de desarrollo y parejar textos
+
+**Planificacion:**
+- El usuario noto que el APK publico seguia mostrando "Configurar conexión al servidor" y pidio revisar toda la interfaz por incoherencias similares "por el tiempo" (cosas que tenian sentido en desarrollo pero no en la version publica real que ya se distribuyo).
+- Se lanzo un agente de exploracion (solo lectura) sobre `mobile/lib/` para no confiar en memoria/suposiciones. El selector de servidor no es un bug: es la funcion que hace la app autoalojable (declarado en el README), asi que se le pregunto al usuario si ocultarla en la build publica, quitarla del todo, o dejarla — eligio ocultarla solo en la build publica.
+
+**Ejecucion:**
+- `mobile/lib/core/config.dart`: `AppConfig.apiBaseUrl` ya no usa `http://10.0.2.2:8000/api/v1` (direccion del emulador) como valor por defecto sino la URL real de Render — asi un build que por error no reciba `--dart-define=API_BASE_URL` falla hacia produccion en vez de fallar en silencio hacia una direccion inalcanzable para cualquier usuario real. Se agrego `AppConfig.isDevBuild` (`bool.fromEnvironment('DEV_BUILD')`, false por defecto).
+- `mobile/lib/app.dart`: el boton "Configurar conexión al servidor" (`WelcomeScreen`) y la fila "Servidor de sincronización" (`Profile`) ahora estan detras de `if (AppConfig.isDevBuild)`. Titulo de la pantalla de login: "Bienvenido de vuelta" -> "Iniciar sesión" (parejo con el boton que lleva ahi). "Probar solo en este dispositivo" -> "Escribir sin crear cuenta" (el modo local es una funcion permanente, no una prueba). Unificado "Sin sinopsis"/"Sinopsis pendiente" (dos textos para el mismo estado en `SearchScreen` vs `ProjectCard`) a "Sinopsis pendiente" en ambos.
+- `mobile/lib/community.dart`: "Chat grupal · inspiraT" (sin tilde, dos lugares) -> usa `AppConfig.displayName` interpolado en vez de un literal repetido.
+- `scripts/build_android.ps1`: ahora pasa `--dart-define=DEV_BUILD=true` cuando `-Flavor dev` (y `false` para cualquier otro flavor, incluido `prod`).
+- `docs/ANDROID.md` y `.github/workflows/ci.yml`: comandos de ejemplo y el build de CI actualizados con `DEV_BUILD=true` para que sigan mostrando el selector en desarrollo.
+- No se toco (evaluado y descartado): `device_name: 'Android'` hardcodeado en `api_client.dart` — es correcto tal cual, esta app no tiene carpeta `ios/`, solo apunta a Android.
+
+**Validacion:**
+- `flutter analyze` limpio (copia en ruta ASCII, mismo motivo de siempre con el caracter "í" del path real).
+- `flutter test`: 20/20, sin cambios de resultado; se confirmo por grep que ningun test dependia de los textos que se modificaron ("Bienvenido de vuelta", "Probar solo en este dispositivo", "Sin sinopsis", "inspiraT" sin tilde).
+- Se recompilo el APK publico (`-Flavor prod -Release`) con estos cambios para reemplazar el que se habia entregado antes de esta correccion (ese primer APK todavia mostraba el selector de servidor).
+
+**Archivos Modificados:**
+- `mobile/lib/core/config.dart`, `mobile/lib/app.dart`, `mobile/lib/community.dart`
+- `scripts/build_android.ps1`
+- `docs/ANDROID.md`, `.github/workflows/ci.yml`
+- AGENTS.md
+
 ### [2026-07-26] 3. Migracion a produccion real: GitHub + Supabase + Resend + Render, y firma de release Android
 
 **Planificacion:**

@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:uuid/uuid.dart';
 
 import 'app_controller.dart';
+import 'core/config.dart';
 import 'core/theme.dart';
 import 'data/models.dart';
 
@@ -246,7 +247,9 @@ class _CommunityHubState extends State<CommunityHub>
                   ),
                   title: const Row(
                     children: [
-                      Expanded(child: Text('Chat grupal · inspiraT')),
+                      Expanded(
+                        child: Text('Chat grupal · ${AppConfig.displayName}'),
+                      ),
                       Icon(Icons.push_pin_outlined, size: 18),
                     ],
                   ),
@@ -484,7 +487,7 @@ class _GeneralChatScreenState extends State<GeneralChatScreen>
       title: const Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Chat grupal · inspiraT'),
+          Text('Chat grupal · ${AppConfig.displayName}'),
           Text(
             'Visible para todas las cuentas',
             style: TextStyle(fontSize: 12, fontWeight: FontWeight.normal),

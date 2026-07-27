@@ -199,13 +199,14 @@ class WelcomeScreen extends StatelessWidget {
                 await controller.useLocally();
                 if (context.mounted) context.go('/home');
               },
-              child: const Text('Probar solo en este dispositivo'),
+              child: const Text('Escribir sin crear cuenta'),
             ),
-            TextButton.icon(
-              onPressed: () => showServerConfiguration(context, controller),
-              icon: const Icon(Icons.lan_outlined),
-              label: const Text('Configurar conexión al servidor'),
-            ),
+            if (AppConfig.isDevBuild)
+              TextButton.icon(
+                onPressed: () => showServerConfiguration(context, controller),
+                icon: const Icon(Icons.lan_outlined),
+                label: const Text('Configurar conexión al servidor'),
+              ),
           ],
         ),
       ),
@@ -322,7 +323,7 @@ class _AuthScreenState extends State<AuthScreen> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: Text(widget.register ? 'Crear cuenta' : 'Bienvenida de vuelta'),
+      title: Text(widget.register ? 'Crear cuenta' : 'Iniciar sesión'),
     ),
     body: Form(
       key: formKey,
@@ -1051,7 +1052,7 @@ class _SearchScreenState extends State<SearchScreen> {
                   title: Text(project.title),
                   subtitle: Text(
                     project.synopsis.isEmpty
-                        ? 'Sin sinopsis'
+                        ? 'Sinopsis pendiente'
                         : project.synopsis,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
@@ -1756,13 +1757,14 @@ class Profile extends StatelessWidget {
                     'sincronizan.',
         ),
       ),
-      ListTile(
-        leading: const Icon(Icons.lan_outlined),
-        title: const Text('Servidor de sincronización'),
-        subtitle: Text(controller.serverBaseUrl),
-        trailing: const Icon(Icons.edit_outlined),
-        onTap: () => showServerConfiguration(context, controller),
-      ),
+      if (AppConfig.isDevBuild)
+        ListTile(
+          leading: const Icon(Icons.lan_outlined),
+          title: const Text('Servidor de sincronización'),
+          subtitle: Text(controller.serverBaseUrl),
+          trailing: const Icon(Icons.edit_outlined),
+          onTap: () => showServerConfiguration(context, controller),
+        ),
       const SizedBox(height: 16),
       if (!controller.localMode)
         OutlinedButton(
