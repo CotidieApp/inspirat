@@ -5,6 +5,20 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: inspirat
+          POSTGRES_USER: inspirat
+          POSTGRES_PASSWORD: inspirat_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U inspirat -d inspirat"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -12,6 +26,14 @@ jobs:
       - run: pip install -e "./backend[dev]"
       - run: ruff check backend
       - run: pytest backend
+      # Los tests corren contra sqlite (ver tests/conftest.py); esto valida
+      # aparte que las migraciones de Alembic aplican limpio contra Postgres
+      # real, el motor que produccion realmente usa (sqlite esta vetado ahi).
+      - name: Migraciones contra Postgres real
+        working-directory: backend
+        env:
+          INSPIRAT_DATABASE_URL: postgresql+psycopg://inspirat:inspirat_ci@localhost:5432/inspirat
+        run: alembic upgrade head
       - run: docker compose config --quiet
       - run: docker build -t inspirat_backend:test backend
   android:

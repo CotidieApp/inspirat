@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from io import BytesIO
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import ValidationError
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
@@ -156,6 +157,12 @@ def forgot_password(data: PasswordForgotIn, db: Session = Depends(get_db)) -> di
     user = db.scalar(select(User).where(or_(User.email == identity, User.username == identity)))
     if not user or not user.is_active:
         return generic_response
+    for previous in db.scalars(
+        select(PasswordResetCode).where(
+            PasswordResetCode.user_id == user.id, PasswordResetCode.used_at.is_(None)
+        )
+    ):
+        previous.used_at = now()
     code, code_hash = new_reset_code()
     db.add(
         PasswordResetCode(
@@ -233,18 +240,29 @@ def list_projects(
     )
 
 
+def existing_project_by_client_id(client_id: str, user: User, db: Session) -> Project | None:
+    return db.scalar(
+        select(Project).where(Project.owner_id == user.id, Project.client_id == client_id)
+    )
+
+
 @router.post("/projects", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
 def create_project(
     data: ProjectIn, user: User = Depends(current_user), db: Session = Depends(get_db)
 ) -> Project:
-    existing = db.scalar(
-        select(Project).where(Project.owner_id == user.id, Project.client_id == data.client_id)
-    )
+    existing = existing_project_by_client_id(data.client_id, user, db)
     if existing:
         return existing
     project = Project(owner_id=user.id, **data.model_dump())
     db.add(project)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = existing_project_by_client_id(data.client_id, user, db)
+        if existing:
+            return existing
+        raise
     db.refresh(project)
     return project
 
@@ -290,6 +308,16 @@ def list_documents(
     )
 
 
+def existing_document_by_client_id(
+    project_id: str, client_id: str, db: Session
+) -> Document | None:
+    return db.scalar(
+        select(Document).where(
+            Document.project_id == project_id, Document.client_id == client_id
+        )
+    )
+
+
 @router.post(
     "/projects/{project_id}/documents",
     response_model=DocumentOut,
@@ -302,11 +330,7 @@ def create_document(
     db: Session = Depends(get_db),
 ) -> Document:
     project = owned_project(project_id, user, db)
-    existing = db.scalar(
-        select(Document).where(
-            Document.project_id == project.id, Document.client_id == data.client_id
-        )
-    )
+    existing = existing_document_by_client_id(project.id, data.client_id, db)
     if existing:
         return existing
     if len(data.content) > settings.max_document_chars:
@@ -318,7 +342,14 @@ def create_document(
     )
     db.add(document)
     project.revision += 1
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = existing_document_by_client_id(project.id, data.client_id, db)
+        if existing:
+            return existing
+        raise
     db.refresh(document)
     return document
 
@@ -452,6 +483,19 @@ def restore_version(
     return document
 
 
+def existing_share(document_id: str, recipient_id: str, db: Session) -> Share | None:
+    return db.scalar(
+        select(Share).where(Share.document_id == document_id, Share.recipient_id == recipient_id)
+    )
+
+
+def apply_share(share: Share, data: ShareIn) -> None:
+    share.permission = data.permission
+    share.message = data.message
+    share.expires_at = data.expires_at
+    share.revoked_at = None
+
+
 @router.post("/documents/{document_id}/shares", response_model=ShareOut)
 def share_document(
     document_id: str,
@@ -473,14 +517,9 @@ def share_document(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Destinatario no encontrado")
     if recipient.id == user.id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No puedes enviártelo a ti mismo")
-    share = db.scalar(
-        select(Share).where(Share.document_id == document.id, Share.recipient_id == recipient.id)
-    )
+    share = existing_share(document.id, recipient.id, db)
     if share:
-        share.permission = data.permission
-        share.message = data.message
-        share.expires_at = data.expires_at
-        share.revoked_at = None
+        apply_share(share, data)
     else:
         share = Share(
             document_id=document.id,
@@ -500,7 +539,24 @@ def share_document(
             resource_id=document.id,
         )
     )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        share = existing_share(document.id, recipient.id, db)
+        if share is None:
+            raise
+        apply_share(share, data)
+        db.add(
+            Notification(
+                user_id=recipient.id,
+                kind="share",
+                title=f"{user.display_name} compartió «{document.title}»",
+                body=data.message,
+                resource_id=document.id,
+            )
+        )
+        db.commit()
     db.refresh(share)
     return share
 
@@ -518,7 +574,12 @@ def revoke_share(
 
 
 @router.get("/shares/inbox", response_model=list[InboxItem])
-def inbox(user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[InboxItem]:
+def inbox(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[InboxItem]:
     shares = list(
         db.scalars(
             select(Share)
@@ -528,12 +589,27 @@ def inbox(user: User = Depends(current_user), db: Session = Depends(get_db)) -> 
                 or_(Share.expires_at.is_(None), Share.expires_at > now()),
             )
             .order_by(Share.created_at.desc())
+            .offset(offset)
+            .limit(limit)
         )
     )
+    if not shares:
+        return []
+    document_ids = {share.document_id for share in shares}
+    sender_ids = {share.sender_id for share in shares}
+    documents_by_id = {
+        document.id: document
+        for document in db.scalars(select(Document).where(Document.id.in_(document_ids)))
+    }
+    senders_by_id = {
+        sender.id: sender for sender in db.scalars(select(User).where(User.id.in_(sender_ids)))
+    }
     result = []
     for share in shares:
-        document = db.get(Document, share.document_id)
-        sender = db.get(User, share.sender_id)
+        document = documents_by_id.get(share.document_id)
+        sender = senders_by_id.get(share.sender_id)
+        if document is None or sender is None:
+            continue
         result.append(
             InboxItem(
                 **ShareOut.model_validate(share).model_dump(),
@@ -625,108 +701,155 @@ def sync(
     accepted: list[dict] = []
     conflicts: list[dict] = []
     for change in data.changes:
-        if change.entity == "project" and change.operation == "upsert":
-            existing = db.scalar(
-                select(Project).where(
-                    Project.owner_id == user.id, Project.client_id == change.client_id
-                )
-            )
-            if existing and change.base_revision and existing.revision != change.base_revision:
-                conflicts.append(
-                    {
-                        "entity": "project",
-                        "client_id": change.client_id,
-                        "server_revision": existing.revision,
-                        "server": ProjectOut.model_validate(existing).model_dump(mode="json"),
-                        "submitted": change.payload,
-                    }
-                )
-                continue
-            if not existing:
-                validated = ProjectIn.model_validate(
-                    {"client_id": change.client_id, **change.payload}
-                )
-                existing = Project(owner_id=user.id, **validated.model_dump())
-                db.add(existing)
-            else:
-                for key, value in change.payload.items():
-                    if key in ProjectIn.model_fields and key != "client_id":
-                        setattr(existing, key, value)
-                existing.revision += 1
-            db.flush()
-            accepted.append(
-                {"entity": "project", "client_id": change.client_id, "server_id": existing.id}
-            )
-        elif change.entity == "document" and change.operation == "upsert":
-            project_client_id = change.payload.get("project_client_id")
-            project = db.scalar(
-                select(Project).where(
-                    Project.owner_id == user.id, Project.client_id == project_client_id
-                )
-            )
-            if not project:
-                conflicts.append(
-                    {
-                        "entity": "document",
-                        "client_id": change.client_id,
-                        "reason": "parent_missing",
-                        "submitted": change.payload,
-                    }
-                )
-                continue
-            existing = db.scalar(
-                select(Document).where(
-                    Document.project_id == project.id, Document.client_id == change.client_id
-                )
-            )
-            if existing and change.base_revision and existing.revision != change.base_revision:
-                db.add(
-                    DocumentVersion(
-                        document_id=existing.id,
-                        author_id=user.id,
-                        name=f"Conflicto móvil r{change.base_revision}",
-                        content=str(change.payload.get("content", "")),
-                        revision=change.base_revision,
-                        is_manual=True,
+        try:
+            with db.begin_nested():
+                if change.entity == "project" and change.operation == "upsert":
+                    existing = db.scalar(
+                        select(Project).where(
+                            Project.owner_id == user.id, Project.client_id == change.client_id
+                        )
                     )
-                )
-                conflicts.append(
-                    {
-                        "entity": "document",
-                        "client_id": change.client_id,
-                        "server_revision": existing.revision,
-                        "server": DocumentOut.model_validate(existing).model_dump(mode="json"),
-                        "submitted": change.payload,
-                    }
-                )
-                continue
-            payload = dict(change.payload)
-            payload.pop("project_client_id", None)
-            validated = DocumentIn.model_validate({"client_id": change.client_id, **payload})
-            if not existing:
-                existing = Document(
-                    project_id=project.id,
-                    word_count=len(validated.content.split()),
-                    **validated.model_dump(),
-                )
-                db.add(existing)
-            else:
-                db.add(
-                    DocumentVersion(
-                        document_id=existing.id,
-                        author_id=user.id,
-                        name="Antes de sincronizar",
-                        content=existing.content,
-                        revision=existing.revision,
+                    if (
+                        existing
+                        and change.base_revision
+                        and existing.revision != change.base_revision
+                    ):
+                        conflicts.append(
+                            {
+                                "entity": "project",
+                                "client_id": change.client_id,
+                                "server_revision": existing.revision,
+                                "server": ProjectOut.model_validate(existing).model_dump(
+                                    mode="json"
+                                ),
+                                "submitted": change.payload,
+                            }
+                        )
+                        continue
+                    if not existing:
+                        validated = ProjectIn.model_validate(
+                            {"client_id": change.client_id, **change.payload}
+                        )
+                        existing = Project(owner_id=user.id, **validated.model_dump())
+                        db.add(existing)
+                    else:
+                        for key, value in change.payload.items():
+                            if key in ProjectIn.model_fields and key != "client_id":
+                                setattr(existing, key, value)
+                        existing.revision += 1
+                    db.flush()
+                    accepted.append(
+                        {
+                            "entity": "project",
+                            "client_id": change.client_id,
+                            "server_id": existing.id,
+                        }
                     )
-                )
-                for key, value in validated.model_dump(exclude={"client_id"}).items():
-                    setattr(existing, key, value)
-                existing.word_count = len(existing.content.split())
-                existing.revision += 1
-            db.flush()
-            accepted.append(
-                {"entity": "document", "client_id": change.client_id, "server_id": existing.id}
+                elif change.entity == "document" and change.operation == "upsert":
+                    project_client_id = change.payload.get("project_client_id")
+                    project = db.scalar(
+                        select(Project).where(
+                            Project.owner_id == user.id, Project.client_id == project_client_id
+                        )
+                    )
+                    if not project:
+                        conflicts.append(
+                            {
+                                "entity": "document",
+                                "client_id": change.client_id,
+                                "reason": "parent_missing",
+                                "submitted": change.payload,
+                            }
+                        )
+                        continue
+                    content = change.payload.get("content")
+                    if isinstance(content, str) and len(content) > settings.max_document_chars:
+                        conflicts.append(
+                            {
+                                "entity": "document",
+                                "client_id": change.client_id,
+                                "reason": "content_too_large",
+                                "submitted": {"content": None, **change.payload},
+                            }
+                        )
+                        continue
+                    existing = db.scalar(
+                        select(Document).where(
+                            Document.project_id == project.id,
+                            Document.client_id == change.client_id,
+                        )
+                    )
+                    if (
+                        existing
+                        and change.base_revision
+                        and existing.revision != change.base_revision
+                    ):
+                        db.add(
+                            DocumentVersion(
+                                document_id=existing.id,
+                                author_id=user.id,
+                                name=f"Conflicto móvil r{change.base_revision}",
+                                content=str(change.payload.get("content", "")),
+                                revision=change.base_revision,
+                                is_manual=True,
+                            )
+                        )
+                        conflicts.append(
+                            {
+                                "entity": "document",
+                                "client_id": change.client_id,
+                                "server_revision": existing.revision,
+                                "server": DocumentOut.model_validate(existing).model_dump(
+                                    mode="json"
+                                ),
+                                "submitted": change.payload,
+                            }
+                        )
+                        continue
+                    payload = dict(change.payload)
+                    payload.pop("project_client_id", None)
+                    validated = DocumentIn.model_validate(
+                        {"client_id": change.client_id, **payload}
+                    )
+                    if not existing:
+                        existing = Document(
+                            project_id=project.id,
+                            word_count=len(validated.content.split()),
+                            **validated.model_dump(),
+                        )
+                        db.add(existing)
+                    else:
+                        db.add(
+                            DocumentVersion(
+                                document_id=existing.id,
+                                author_id=user.id,
+                                name="Antes de sincronizar",
+                                content=existing.content,
+                                revision=existing.revision,
+                            )
+                        )
+                        for key, value in validated.model_dump(exclude={"client_id"}).items():
+                            setattr(existing, key, value)
+                        existing.word_count = len(existing.content.split())
+                        existing.revision += 1
+                    db.flush()
+                    accepted.append(
+                        {
+                            "entity": "document",
+                            "client_id": change.client_id,
+                            "server_id": existing.id,
+                        }
+                    )
+        except (ValidationError, IntegrityError) as exc:
+            conflicts.append(
+                {
+                    "entity": change.entity,
+                    "client_id": change.client_id,
+                    "reason": "invalid_payload"
+                    if isinstance(exc, ValidationError)
+                    else "integrity_error",
+                    "submitted": change.payload,
+                }
             )
     db.commit()
     project_query = select(Project).where(Project.owner_id == user.id, Project.deleted_at.is_(None))

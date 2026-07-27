@@ -36,11 +36,36 @@ abstract final class InspiratTheme {
     ),
   );
 
+  static const _darkSurface = Color(0xFF10191A);
+  static const _darkCard = Color(0xFF1C2E30);
+
   static ThemeData dark() => ThemeData(
     useMaterial3: true,
     colorScheme: ColorScheme.fromSeed(
       seedColor: petrol,
       brightness: Brightness.dark,
+      surface: _darkSurface,
+    ),
+    scaffoldBackgroundColor: _darkSurface,
+    appBarTheme: const AppBarTheme(
+      backgroundColor: Colors.transparent,
+      foregroundColor: paper,
+      centerTitle: false,
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: Colors.white.withValues(alpha: .06),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: BorderSide.none,
+      ),
+    ),
+    cardTheme: const CardThemeData(
+      elevation: 0,
+      color: _darkCard,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.all(Radius.circular(20)),
+      ),
     ),
   );
 }

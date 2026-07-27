@@ -10,6 +10,13 @@ import 'data/api_client.dart';
 import 'data/local_store.dart';
 import 'data/models.dart';
 
+/// Clasificación tipada de [AppController.syncState], que sigue siendo el
+/// texto que se muestra en pantalla. Antes [SyncBanner] adivinaba la
+/// categoría con `syncState.contains('...')` sobre ese texto — frágil,
+/// porque cualquier cambio de copy rompía la clasificación visual sin que
+/// ningún test lo detectara. Esto separa "qué mostrar" de "qué significa".
+enum SyncStatus { local, restoring, offline, pending, syncing, conflict, synced }
+
 class AppController extends ChangeNotifier {
   AppController({
     LocalStore? store,
@@ -38,11 +45,14 @@ class AppController extends ChangeNotifier {
   String? error;
   String serverBaseUrl = AppConfig.apiBaseUrl;
   String syncState = 'Solo en este dispositivo';
+  SyncStatus syncStatus = SyncStatus.local;
   int pendingCount = 0;
   int conflictCount = 0;
   int localProjectsAvailable = 0;
   List<WritingProject> projects = [];
   final Map<String, List<WritingDocument>> documentsByProject = {};
+  String? _mostFrequentWordCache;
+  List<WritingDocument>? _sortedDocumentsCache;
 
   Future<void> initialize() async {
     await store.open();
@@ -66,6 +76,7 @@ class AppController extends ChangeNotifier {
       }
       localMode = false;
       syncState = 'Restaurando sesión…';
+      syncStatus = SyncStatus.restoring;
       try {
         await _applyTokens(await api.refresh(refreshToken));
       } on DioException catch (exception) {
@@ -77,15 +88,18 @@ class AppController extends ChangeNotifier {
           username = null;
           localMode = true;
           syncState = 'Solo en este dispositivo';
+          syncStatus = SyncStatus.local;
           await store.switchScope(LocalStore.localScope);
           await reload();
         } else {
           error = _friendly(exception);
           syncState = 'Sesión guardada · sin conexión';
+          syncStatus = SyncStatus.offline;
         }
       } catch (exception) {
         error = _friendly(exception);
         syncState = 'Sesión guardada · sin conexión';
+        syncStatus = SyncStatus.offline;
       }
     }
     ready = true;
@@ -93,16 +107,32 @@ class AppController extends ChangeNotifier {
     if (!localMode) unawaited(sync());
   }
 
+  void _invalidateDerivedCaches() {
+    _mostFrequentWordCache = null;
+    _sortedDocumentsCache = null;
+  }
+
   Future<void> reload() async {
-    projects = await store.projects();
-    pendingCount = await store.pendingCount();
-    conflictCount = await store.conflictCount();
-    documentsByProject.clear();
-    for (final project in projects) {
-      documentsByProject[project.clientId] = await store.documents(
-        project.clientId,
+    final results = await Future.wait([
+      store.projects(),
+      store.pendingCount(),
+      store.conflictCount(),
+    ]);
+    projects = results[0] as List<WritingProject>;
+    pendingCount = results[1] as int;
+    conflictCount = results[2] as int;
+    final documentLists = await Future.wait(
+      projects.map((project) => store.documents(project.clientId)),
+    );
+    documentsByProject
+      ..clear()
+      ..addEntries(
+        List.generate(
+          projects.length,
+          (index) => MapEntry(projects[index].clientId, documentLists[index]),
+        ),
       );
-    }
+    _invalidateDerivedCaches();
     notifyListeners();
   }
 
@@ -126,6 +156,7 @@ class AppController extends ChangeNotifier {
     );
     localMode = false;
     syncState = 'Pendiente de sincronizar';
+    syncStatus = SyncStatus.pending;
   }
 
   Future<void> _clearStoredSession() async {
@@ -241,6 +272,7 @@ class AppController extends ChangeNotifier {
     localMode = true;
     error = null;
     syncState = 'Solo en este dispositivo';
+    syncStatus = SyncStatus.local;
     await store.switchScope(LocalStore.localScope);
     await reload();
     notifyListeners();
@@ -276,6 +308,7 @@ class AppController extends ChangeNotifier {
     username = null;
     localMode = true;
     syncState = 'Solo en este dispositivo';
+    syncStatus = SyncStatus.local;
     await _clearStoredSession();
     await store.switchScope(LocalStore.localScope);
     await reload();
@@ -321,6 +354,7 @@ class AppController extends ChangeNotifier {
       syncState = localMode
           ? 'Servidor disponible'
           : 'Pendiente de sincronizar';
+      syncStatus = localMode ? SyncStatus.local : SyncStatus.pending;
       return true;
     } catch (_) {
       error =
@@ -406,6 +440,8 @@ class AppController extends ChangeNotifier {
     syncState = localMode
         ? 'Guardado en este dispositivo'
         : 'Cambios pendientes';
+    syncStatus = localMode ? SyncStatus.local : SyncStatus.pending;
+    _invalidateDerivedCaches();
     notifyListeners();
     return updated;
   }
@@ -418,12 +454,14 @@ class AppController extends ChangeNotifier {
       } catch (exception) {
         error = _friendly(exception);
         syncState = 'Sesión guardada · sin conexión';
+        syncStatus = SyncStatus.offline;
         notifyListeners();
         return false;
       }
     }
     busy = true;
     syncState = 'Sincronizando…';
+    syncStatus = SyncStatus.syncing;
     error = null;
     notifyListeners();
     var completed = false;
@@ -447,11 +485,17 @@ class AppController extends ChangeNotifier {
           : remaining == 0
           ? 'Todo sincronizado'
           : '$remaining cambios pendientes de otra sincronización';
+      syncStatus = conflicts || blocked > 0
+          ? SyncStatus.conflict
+          : remaining == 0
+          ? SyncStatus.synced
+          : SyncStatus.pending;
       completed = !conflicts && blocked == 0 && remaining == 0;
       await reload();
     } catch (exception) {
       error = _friendly(exception);
       syncState = 'Sin conexión · los cambios están seguros';
+      syncStatus = SyncStatus.offline;
     } finally {
       busy = false;
       pendingCount = await store.pendingCount();
@@ -549,6 +593,7 @@ class AppController extends ChangeNotifier {
     await store.unblockConflicts();
     await reload();
     syncState = 'Preparando tu copia local para sincronizar…';
+    syncStatus = SyncStatus.syncing;
     notifyListeners();
     return sync();
   }
@@ -568,7 +613,18 @@ class AppController extends ChangeNotifier {
   int get totalWordCount =>
       allDocuments.fold(0, (total, document) => total + document.wordCount);
 
-  String get mostFrequentWord {
+  /// Todos los documentos ordenados por fecha de modificación (más recientes
+  /// primero), calculado una sola vez por cambio de datos en vez de en cada
+  /// build de las pantallas que muestran "escritos recientes".
+  List<WritingDocument> get recentDocuments {
+    return _sortedDocumentsCache ??= allDocuments
+        .toList()
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+  }
+
+  String get mostFrequentWord => _mostFrequentWordCache ??= _computeMostFrequentWord();
+
+  String _computeMostFrequentWord() {
     const ignored = {
       'para',
       'como',

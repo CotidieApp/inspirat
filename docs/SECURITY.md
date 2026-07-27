@@ -12,8 +12,11 @@
   La respuesta no revela si la cuenta existe.
 - Login y restablecimiento de contraseña tienen límite de intentos por
   identidad (proceso, no distribuido) para dificultar fuerza bruta.
-- Producción requiere HTTPS, CORS restringido, secreto aleatorio, volúmenes
-  cifrados, firewall y copias cifradas.
+- Producción requiere HTTPS, CORS restringido y un secreto aleatorio (esto
+  último lo verifica un guardarraya al arrancar con `INSPIRAT_ENV=production`,
+  ver `app/config.py`). Si se autoaloja en un VPS (alternativa a Render, ver
+  `docs/DEPLOYMENT.md`) además hacen falta volúmenes cifrados y firewall
+  propio; con Render + Supabase esas capas las gestiona el proveedor.
 - Los logs contienen metadatos técnicos y UUID, nunca el texto completo.
 - El autor conserva todos los derechos sobre su obra. El servicio no usa textos
   para entrenar IA y las futuras funciones de IA estarán apagadas por defecto.
@@ -21,9 +24,15 @@
 ## Retención
 
 La papelera lógica se conserva 30 días por defecto (tarea programada pendiente).
-Las sesiones revocadas y auditorías técnicas pueden conservarse 90 días. Las
-copias diarias siguen una política 7/4/12: siete diarias, cuatro semanales y
-doce mensuales. Ajustar según legislación y contrato.
+Las sesiones revocadas y auditorías técnicas pueden conservarse 90 días.
+
+Copias de la base de datos: Supabase gestiona backups/PITR automáticos según
+el plan. Además, `.github/workflows/backup.yml` corre un `pg_dump` semanal
+(domingos) y lo guarda como artifact de GitHub Actions con 12 semanas de
+retención — requiere el secret `SUPABASE_DATABASE_URL` configurado en el
+repositorio. No es una política 7/4/12 diaria; es lo mínimo automatizado y
+razonable para el tamaño actual del proyecto. Ajustar según legislación y
+contrato si el volumen de usuarios crece.
 
 ## Ruta a cifrado de extremo a extremo
 

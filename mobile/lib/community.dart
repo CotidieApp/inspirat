@@ -134,6 +134,37 @@ Future<List<CommunityMessage>> _prependConfirmed(
   }
 }
 
+/// Reprograma su propio disparo (en vez de un intervalo fijo tipo
+/// [Timer.periodic]) para poder alejar la siguiente consulta cuando el
+/// servidor viene fallando, en lugar de seguir golpeándolo cada pocos
+/// segundos indefinidamente.
+class _BackoffTimer {
+  _BackoffTimer({required this.baseInterval});
+
+  static const maxInterval = Duration(minutes: 2);
+
+  final Duration baseInterval;
+  int failures = 0;
+  Timer? _timer;
+
+  void start(Future<void> Function() tick) {
+    _timer = Timer(baseInterval, () => _run(tick));
+  }
+
+  Future<void> _run(Future<void> Function() tick) async {
+    await tick();
+    _timer = Timer(_nextDelay(), () => _run(tick));
+  }
+
+  Duration _nextDelay() {
+    if (failures <= 0) return baseInterval;
+    final scaled = baseInterval * (1 << failures.clamp(0, 4));
+    return scaled > maxInterval ? maxInterval : scaled;
+  }
+
+  void cancel() => _timer?.cancel();
+}
+
 class CommunityHub extends StatefulWidget {
   const CommunityHub({super.key, required this.controller});
 
@@ -146,24 +177,22 @@ class CommunityHub extends StatefulWidget {
 class _CommunityHubState extends State<CommunityHub>
     with WidgetsBindingObserver {
   late Future<_CommunityOverview> overview = load();
-  Timer? polling;
+  final poller = _BackoffTimer(baseInterval: const Duration(seconds: 6));
   bool refreshing = false;
   bool appActive = true;
+  bool warnedStale = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    polling = Timer.periodic(
-      const Duration(seconds: 6),
-      (_) => unawaited(refresh(silent: true)),
-    );
+    poller.start(() => refresh(silent: true));
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    polling?.cancel();
+    poller.cancel();
     super.dispose();
   }
 
@@ -195,13 +224,25 @@ class _CommunityHubState extends State<CommunityHub>
     refreshing = true;
     try {
       final data = await load();
+      poller.failures = 0;
+      warnedStale = false;
       if (mounted) {
         setState(() {
           overview = Future.value(data);
         });
       }
-    } catch (_) {
+    } catch (error) {
+      poller.failures += 1;
+      debugPrint('No se pudo actualizar la comunidad (intento ${poller.failures}): $error');
       if (!silent) rethrow;
+      if (poller.failures >= 3 && !warnedStale && mounted) {
+        warnedStale = true;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Sin conexión con el servidor. Reintentando…'),
+          ),
+        );
+      }
     } finally {
       refreshing = false;
     }
@@ -388,24 +429,22 @@ class GeneralChatScreen extends StatefulWidget {
 class _GeneralChatScreenState extends State<GeneralChatScreen>
     with WidgetsBindingObserver {
   late Future<List<CommunityMessage>> messages = load();
-  Timer? polling;
+  final poller = _BackoffTimer(baseInterval: const Duration(seconds: 4));
   bool refreshing = false;
   bool appActive = true;
+  bool warnedStale = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    polling = Timer.periodic(
-      const Duration(seconds: 4),
-      (_) => unawaited(refresh(silent: true)),
-    );
+    poller.start(() => refresh(silent: true));
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    polling?.cancel();
+    poller.cancel();
     super.dispose();
   }
 
@@ -425,13 +464,25 @@ class _GeneralChatScreenState extends State<GeneralChatScreen>
     refreshing = true;
     try {
       final data = await load();
+      poller.failures = 0;
+      warnedStale = false;
       if (mounted) {
         setState(() {
           messages = Future.value(data);
         });
       }
-    } catch (_) {
+    } catch (error) {
+      poller.failures += 1;
+      debugPrint('No se pudo actualizar los mensajes (intento ${poller.failures}): $error');
       if (!silent) rethrow;
+      if (poller.failures >= 3 && !warnedStale && mounted) {
+        warnedStale = true;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Sin conexión con el servidor. Reintentando…'),
+          ),
+        );
+      }
     } finally {
       refreshing = false;
     }
@@ -539,24 +590,22 @@ class DirectChatScreen extends StatefulWidget {
 class _DirectChatScreenState extends State<DirectChatScreen>
     with WidgetsBindingObserver {
   late Future<List<CommunityMessage>> messages = load();
-  Timer? polling;
+  final poller = _BackoffTimer(baseInterval: const Duration(seconds: 4));
   bool refreshing = false;
   bool appActive = true;
+  bool warnedStale = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    polling = Timer.periodic(
-      const Duration(seconds: 4),
-      (_) => unawaited(refresh(silent: true)),
-    );
+    poller.start(() => refresh(silent: true));
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    polling?.cancel();
+    poller.cancel();
     super.dispose();
   }
 
@@ -584,13 +633,25 @@ class _DirectChatScreenState extends State<DirectChatScreen>
     refreshing = true;
     try {
       final data = await load();
+      poller.failures = 0;
+      warnedStale = false;
       if (mounted) {
         setState(() {
           messages = Future.value(data);
         });
       }
-    } catch (_) {
+    } catch (error) {
+      poller.failures += 1;
+      debugPrint('No se pudo actualizar los mensajes (intento ${poller.failures}): $error');
       if (!silent) rethrow;
+      if (poller.failures >= 3 && !warnedStale && mounted) {
+        warnedStale = true;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Sin conexión con el servidor. Reintentando…'),
+          ),
+        );
+      }
     } finally {
       refreshing = false;
     }
@@ -644,7 +705,13 @@ class _DirectChatScreenState extends State<DirectChatScreen>
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(widget.user?.displayName ?? 'Conversación')),
+    appBar: AppBar(
+      title: Text(
+        widget.user?.displayName ?? 'Conversación',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+    ),
     body: Column(
       children: [
         Expanded(

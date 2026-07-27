@@ -8,6 +8,60 @@ Historial de intervenciones del asistente en el repo.
 - Esta obligacion aplica aunque el usuario pida tocar solo lo estrictamente necesario: el registro en `AGENTS.md` se considera parte estrictamente necesaria de cualquier edicion del repo.
 - Si una instruccion del usuario prohibe explicitamente editar `AGENTS.md`, el agente debe pedir aclaracion antes de modificar otros archivos.
 
+### [2026-07-27] 5. Auditoria completa (backend/mobile/infra) y correccion de hallazgos reales
+
+**Planificacion:**
+- El usuario pidio "revisa el proyecto y corrige todo lo que estimes necesario... perfecciona... optimiza todo" — la app ya esta en produccion real con usuarios reales, asi que en vez de improvisar cambios se lanzaron tres agentes de exploracion en paralelo (backend, mobile, infra/ops) con instrucciones de auditar sin editar nada y priorizar por severidad. Los tres informes coincidieron independientemente en el mismo hallazgo (pool de SQLAlchemy sin limite explicito, riesgo real contra el limite de conexiones del pooler *session* de Supabase Free) — señal fuerte de que era real y no ruido.
+- Se decidio ejecutar directamente los hallazgos de severidad alta/media-alta con arreglo claro y bajo riesgo, y dejar como recomendacion (no como codigo) los items que requieren una cuenta externa nueva (Sentry, monitor de uptime) o una decision de producto (feature de notificaciones sin terminar, diff visual antes de resolver conflictos, rate limit de registro que romperia el test suite).
+
+**Ejecucion — backend:**
+- Race conditions: `create_project`, `create_document`, `share_document` y los upserts de `/sync` no manejaban `IntegrityError` en el patron "leer si existe, si no insertar" (a pesar de tener `UniqueConstraint` pensadas justo para reintentos idempotentes offline-first). Se aplico el mismo patron try/except-rollback-y-recuperar que ya usaba `community.py::flush_message`.
+- `/sync`: cada cambio del lote ahora corre dentro de un SAVEPOINT (`db.begin_nested()`) y con `ValidationError`/`IntegrityError` capturados por item — antes, un solo cambio invalido (payload corrupto o carrera de client_id) abortaba el lote completo con un 500 generico y sin persistir nada, ni siquiera los cambios validos. Tambien se agrego la verificacion de `max_document_chars` que faltaba ahi (SI existia en `create_document`/`update_document`, pero no en `/sync`).
+- N+1 eliminado en `list_conversations` (hasta ~300 queries por request en el peor caso, resuelto con `ROW_NUMBER() OVER` + 4 queries fijas sin importar cuantas conversaciones haya) y en `/shares/inbox` (queries por lote en vez de por fila, mas paginacion que no existia).
+- Middleware nuevo: limite de tamaño de body (413 si `Content-Length` supera `INSPIRAT_MAX_REQUEST_BYTES`, default 15 MB) — antes no habia ningun limite, vector de DoS por memoria.
+- `/ready` ahora corre `SELECT 1` contra la base real con timeout corto, en vez de devolver `{"status": "ready"}` fijo sin tocar la base — antes Render podia seguir marcando la instancia sana mientras Supabase estaba inalcanzable.
+- `database.py`: pool explicito para Postgres (`pool_size=3, max_overflow=2, pool_recycle=300`) y `connect_timeout=5` — confirmado en vivo que sin el timeout, una base inalcanzable tardaba 130s en fallar; con el, 5s.
+- `/docs`, `/redoc`, `/openapi.json` ahora se ocultan con `INSPIRAT_ENV=production` (antes expuestos siempre).
+- `worker.py`: un mensaje JSON malformado en la cola ya no mata el loop completo (se separo el catch de Redis del catch de parseo).
+- `forgot_password` ahora invalida los codigos de reset anteriores sin usar al generar uno nuevo.
+- Se evaluo y se decidio NO agregar rate limit a `/auth/register`: limitarlo por IP rompuria el test suite (registra ~25 cuentas desde el mismo host de pruebas) y la severidad del hallazgo era media, no alta.
+
+**Ejecucion — mobile:**
+- `main.dart`: `runZonedGuarded` + `FlutterError.onError` + `PlatformDispatcher.instance.onError` — antes cero captura de errores no manejados en toda la app; un crash en cualquier pantalla era invisible por completo. Punto de enganche listo para Sentry en cuanto haya un DSN.
+- `community.dart`: los `catch (_)` silenciosos del polling (3 pantallas) ahora loguean el error y usan un `_BackoffTimer` propio (reemplaza `Timer.periodic` de intervalo fijo) que aleja la siguiente consulta tras fallos consecutivos (hasta 2 min de tope) en vez de seguir golpeando el servidor cada 4-6s indefinidamente; tras 3 fallos seguidos se muestra un snackbar una sola vez avisando "Sin conexión con el servidor".
+- Rendimiento: `mostFrequentWord` (recorria todo el texto de todos los documentos) y un nuevo getter `recentDocuments` ahora se cachean en `AppController` y solo se invalidan cuando los datos realmente cambian (`reload()`/`saveDocument()`), no en cada rebuild disparado por `notifyListeners` durante una sincronizacion. `reload()` ahora carga los documentos de todos los proyectos con `Future.wait` en vez de un `await` secuencial por proyecto.
+- Overflow: `maxLines`/`overflow: TextOverflow.ellipsis` agregado a titulos que no lo tenian (`ProjectCard`, `SearchScreen`, `QuickWrite`, `Inbox`, `ProjectScreen` — AppBar y lista de capitulos, `DirectChatScreen` AppBar). `Inbox` ademas ya no hace un cast forzado (`as String`) sobre el titulo del documento que viene del servidor sin verificar null.
+- `core/theme.dart`: el tema oscuro no tenia `cardTheme`/`appBarTheme`/`inputDecorationTheme` propios (caia al default de Material), lo que arriesgaba bajo contraste con los colores de acento semitransparentes (`champagne`, etc.) ya usados como fondo fijo en varias tarjetas. Se agregaron explicitos.
+- `SyncBanner` clasificaba el estado de sincronizacion con `syncState.contains('Conflicto')`/`.contains('Sin conexión')`/etc. sobre el texto mostrado al usuario — fragil, cualquier cambio de copy rompia la clasificacion visual sin que ningun test lo detectara. Se agrego un enum `SyncStatus` (`AppController.syncStatus`) asignado junto a cada una de las 13 asignaciones de `syncState` existentes; `SyncBanner` ahora compara el enum, no el texto.
+- `core/config.dart`: `API_BASE_URL` por defecto ya no es `http://10.0.2.2:8000/api/v1` (direccion del emulador) sino la URL real de Render — un build sin `--dart-define` explicito ahora falla hacia produccion en vez de fallar en silencio hacia una direccion inalcanzable para cualquier usuario real.
+- `scripts/build_android.ps1`: guardarraya adicional que revienta el build si `DEV_BUILD` terminara en `true` para un flavor distinto de `dev` (defensa extra sobre la derivacion automatica que ya existia).
+
+**Ejecucion — infra:**
+- `backend/Dockerfile`: corre como usuario no root ahora (antes root sin razon).
+- `backend/.dockerignore` (nuevo, no existia).
+- CI (`.github/workflows/ci.yml`): se agrego un servicio `postgres:17-alpine` real y un paso que corre `alembic upgrade head` contra el — antes el pipeline solo probaba contra sqlite (via `tests/conftest.py`), el unico motor que la propia app prohibe en produccion.
+- `.env.production`: se comento `INSPIRAT_REDIS_URL` (apuntaba a un host `redis` que no existe en Render; inofensivo porque nada en la API lo usa, pero confuso) y se documento que `INSPIRAT_CORS_ORIGINS` es un placeholder hasta que exista un frontend web real.
+- `docs/SECURITY.md`: corregida una afirmacion falsa (politica de backups "7/4/12" que no existia en ningun lado del codigo) y la frase que exigia "volumenes cifrados, firewall" como si aplicara siempre (es especifico del escenario VPS, no de Render+Supabase).
+- Nuevo `.github/workflows/backup.yml`: `pg_dump` semanal (domingos, cron) contra Supabase, subido como artifact con 12 semanas de retencion; requiere el secret de repo `SUPABASE_DATABASE_URL` (se intento crear via `gh secret set`, sin error, pero no se pudo verificar con `gh secret list` porque el clasificador de permisos lo bloqueo — pedir al usuario que confirme en GitHub → Settings → Secrets and variables → Actions).
+- `docs/DEPLOYMENT.md` actualizado para reflejar todo lo anterior.
+
+**Validacion:**
+- Backend: `pytest` 32/32 (25 previos + 7 nuevos en `tests/test_sync.py`: happy path de `/sync`, documento sobredimensionado rechazado sin perder el resto del lote, payload invalido no aborta el lote, documento huerfano con proyecto inexistente, y tres pruebas de recuperacion ante duplicado concurrente vía un mock "flaky" que fuerza la rama de `IntegrityError` — para `create_project`, `create_document` y `share_document`). `ruff check` limpio.
+- Se confirmo en vivo (no solo en teoria) que el timeout de conexion funciona: sin `connect_timeout`, una base inalcanzable tardaba 130.1s en devolver 503; con el, 5.1s. Se probo `/ready` en caso sano (200) y caido (503), y `/docs` visible en dev / 404 en produccion.
+- Mobile: `flutter analyze` limpio (copia en ruta ASCII, mismo motivo de siempre con el caracter "í" del path real) y `flutter test` 20/20 sin cambios de resultado; se confirmo por los logs de los propios tests que el logging nuevo de fallos silenciosos si se dispara (`No se pudo actualizar los mensajes (intento 1): DioException...` aparecio en la salida de `community_send_test.dart`, antes desaparecia sin dejar rastro).
+- Docker Desktop no pudo levantar en este equipo durante la sesion (se intento, se espero, no arranco) — la validacion del Dockerfile/build real queda en manos del `docker build` de CI y del redeploy de Render tras el push, no de una corrida local.
+
+**Archivos Modificados:**
+- `backend/app/api/routes.py`, `backend/app/api/community.py`, `backend/app/config.py`, `backend/app/database.py`, `backend/app/main.py`, `backend/app/worker.py`
+- `backend/Dockerfile` (nuevo: no-root), `backend/.dockerignore` (nuevo)
+- `backend/tests/test_sync.py` (nuevo)
+- `mobile/lib/main.dart`, `mobile/lib/app_controller.dart`, `mobile/lib/app.dart`, `mobile/lib/community.dart`, `mobile/lib/core/theme.dart`
+- `scripts/build_android.ps1`
+- `.github/workflows/ci.yml`, `.github/workflows/backup.yml` (nuevo)
+- `.env.production` (no versionado)
+- `docs/SECURITY.md`, `docs/DEPLOYMENT.md`
+- AGENTS.md
+
 ### [2026-07-26] 4. Auditoria de UI para la version publica: ocultar herramientas de desarrollo y parejar textos
 
 **Planificacion:**

@@ -868,14 +868,11 @@ class SyncBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final conflict = controller.syncState.contains('Conflicto');
-    final offline =
-        controller.syncState.contains('Sin conexión') ||
-        controller.syncState.contains('sin conexión');
+    final conflict = controller.syncStatus == SyncStatus.conflict;
+    final offline = controller.syncStatus == SyncStatus.offline;
     final pending =
-        controller.syncState.contains('pendiente') ||
-        controller.syncState.contains('Pendiente') ||
-        controller.syncState.contains('Sincronizando');
+        controller.syncStatus == SyncStatus.pending ||
+        controller.syncStatus == SyncStatus.syncing;
     final color = conflict || offline
         ? InspiratTheme.terracotta
         : pending
@@ -1049,7 +1046,11 @@ class _SearchScreenState extends State<SearchScreen> {
               ...projects.map(
                 (project) => ListTile(
                   leading: const Icon(Icons.auto_stories_outlined),
-                  title: Text(project.title),
+                  title: Text(
+                    project.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                   subtitle: Text(
                     project.synopsis.isEmpty
                         ? 'Sinopsis pendiente'
@@ -1068,7 +1069,11 @@ class _SearchScreenState extends State<SearchScreen> {
               ...documents.map(
                 (document) => ListTile(
                   leading: const Icon(Icons.description_outlined),
-                  title: Text(document.title),
+                  title: Text(
+                    document.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                   subtitle: Text(
                     document.content.replaceAll('\n', ' '),
                     maxLines: 2,
@@ -1125,6 +1130,8 @@ class ProjectCard extends StatelessWidget {
       title: Text(
         project.title,
         style: const TextStyle(fontWeight: FontWeight.w700),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
       ),
       subtitle: Text(
         project.synopsis.isEmpty ? 'Sinopsis pendiente' : project.synopsis,
@@ -1145,9 +1152,7 @@ class QuickWrite extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final docs =
-        controller.documentsByProject.values.expand((value) => value).toList()
-          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    final docs = controller.recentDocuments;
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
@@ -1167,7 +1172,11 @@ class QuickWrite extends StatelessWidget {
               .map(
                 (document) => ListTile(
                   leading: const Icon(Icons.description_outlined),
-                  title: Text(document.title),
+                  title: Text(
+                    document.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                   subtitle: Text(
                     '${document.wordCount} palabras · ${document.syncState}',
                   ),
@@ -1202,7 +1211,13 @@ class ProjectScreen extends StatelessWidget {
       if (project == null) return const MissingContentScreen();
       final documents = controller.documentsByProject[projectId] ?? [];
       return Scaffold(
-        appBar: AppBar(title: Text(project.title)),
+        appBar: AppBar(
+          title: Text(
+            project.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
         body: ListView(
           padding: const EdgeInsets.all(20),
           children: [
@@ -1235,7 +1250,11 @@ class ProjectScreen extends StatelessWidget {
                 (document) => Card(
                   child: ListTile(
                     leading: const Icon(Icons.drag_indicator),
-                    title: Text(document.title),
+                    title: Text(
+                      document.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                     subtitle: Text(
                       '${document.wordCount} palabras · ${document.syncState}',
                     ),
@@ -1691,11 +1710,15 @@ class _InboxState extends State<Inbox> {
             padding: const EdgeInsets.all(16),
             children: snapshot.data!.map((raw) {
               final item = raw as Map<String, dynamic>;
-              final document = item['document'] as Map<String, dynamic>;
+              final document = item['document'] as Map<String, dynamic>? ?? {};
               return Card(
                 child: ListTile(
                   leading: const Icon(Icons.mail_outline),
-                  title: Text(document['title'] as String),
+                  title: Text(
+                    document['title'] as String? ?? 'Sin título',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                   subtitle: Text(
                     '${item['sender_name']} · permiso: ${item['permission']}\n'
                     '${item['message'] as String? ?? ''}',

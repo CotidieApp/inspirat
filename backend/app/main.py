@@ -5,17 +5,20 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from app.api.routes import router
 from app.config import settings
+from app.database import SessionLocal
 
 logger = structlog.get_logger()
 app = FastAPI(
     title="inspíraT API",
     version="0.1.0",
     description="API privada y autoalojable para escritura, sincronización y revisión.",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
+    openapi_url=None if settings.is_production else "/openapi.json",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -24,6 +27,22 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
+
+
+@app.middleware("http")
+async def limit_request_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length is not None and int(content_length) > settings.max_request_bytes:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": {
+                    "code": "request_too_large",
+                    "message": "La solicitud supera el tamaño máximo permitido.",
+                }
+            },
+        )
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -62,8 +81,14 @@ def health() -> dict:
 
 
 @app.get("/ready", tags=["system"])
-def ready() -> dict:
-    return {"status": "ready"}
+def ready() -> JSONResponse:
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+    except Exception:
+        logger.exception("readiness_check_failed")
+        return JSONResponse(status_code=503, content={"status": "database_unreachable"})
+    return JSONResponse(status_code=200, content={"status": "ready"})
 
 
 app.include_router(router, prefix=settings.api_prefix)

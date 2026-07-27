@@ -15,15 +15,21 @@ def run() -> None:
     while True:
         try:
             item = connection.blpop("inspirat:jobs", timeout=10)
-            if item:
-                _, raw = item
-                job = json.loads(raw)
-                # La exportación síncrona cubre el MVP. Esta cola ya proporciona
-                # el punto de ampliación para EPUB, copias y correos pesados.
-                logger.info("job_received", job_id=job.get("id"), kind=job.get("kind"))
         except redis.RedisError:
             logger.warning("worker_redis_unavailable")
             time.sleep(5)
+            continue
+        if not item:
+            continue
+        _, raw = item
+        try:
+            job = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("worker_job_malformed", raw=raw[:200])
+            continue
+        # La exportación síncrona cubre el MVP. Esta cola ya proporciona
+        # el punto de ampliación para EPUB, copias y correos pesados.
+        logger.info("job_received", job_id=job.get("id"), kind=job.get("kind"))
 
 
 if __name__ == "__main__":

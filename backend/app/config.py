@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     access_token_minutes: int = 15
     refresh_token_days: int = 30
     max_document_chars: int = 2_000_000
+    max_request_bytes: int = 15_000_000
 
     smtp_host: str | None = None
     smtp_port: int = 587

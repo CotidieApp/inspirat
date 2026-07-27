@@ -478,55 +478,99 @@ def list_conversations(
         (CommunityMessage.sender_id == user.id, CommunityMessage.recipient_id),
         else_=CommunityMessage.sender_id,
     )
-    rows = db.execute(
-        select(
-            peer_id.label("peer_id"),
-            func.max(CommunityMessage.created_at).label("last_created_at"),
+    peer_rows = list(
+        db.execute(
+            select(
+                peer_id.label("peer_id"),
+                func.max(CommunityMessage.created_at).label("last_created_at"),
+            )
+            .where(
+                CommunityMessage.channel == "direct",
+                or_(
+                    CommunityMessage.sender_id == user.id,
+                    CommunityMessage.recipient_id == user.id,
+                ),
+            )
+            .group_by(peer_id)
+            .order_by(func.max(CommunityMessage.created_at).desc())
+            .offset(offset)
+            .limit(limit)
         )
+    )
+    if not peer_rows:
+        return []
+    peer_ids = [row.peer_id for row in peer_rows]
+
+    peers_by_id = {peer.id: peer for peer in db.scalars(select(User).where(User.id.in_(peer_ids)))}
+
+    # Un solo round-trip para el ultimo mensaje de cada peer (rank=1 por
+    # ventana), en vez de una query por conversacion — antes esto eran hasta
+    # 3*N consultas (N = numero de conversaciones en la pagina).
+    rank = func.row_number().over(
+        partition_by=peer_id,
+        order_by=(CommunityMessage.created_at.desc(), CommunityMessage.id.desc()),
+    ).label("rank")
+    ranked = (
+        select(CommunityMessage.id, peer_id.label("peer_id"), rank)
         .where(
             CommunityMessage.channel == "direct",
             or_(
-                CommunityMessage.sender_id == user.id,
-                CommunityMessage.recipient_id == user.id,
+                and_(
+                    CommunityMessage.sender_id == user.id,
+                    CommunityMessage.recipient_id.in_(peer_ids),
+                ),
+                and_(
+                    CommunityMessage.recipient_id == user.id,
+                    CommunityMessage.sender_id.in_(peer_ids),
+                ),
             ),
         )
-        .group_by(peer_id)
-        .order_by(func.max(CommunityMessage.created_at).desc())
-        .offset(offset)
-        .limit(limit)
+        .subquery()
     )
-    conversations: list[ConversationOut] = []
-    for row in rows:
-        peer = db.get(User, row.peer_id)
-        if peer is None:
-            continue
-        last_message = db.scalar(
-            select(CommunityMessage)
-            .where(
-                CommunityMessage.channel == "direct",
-                direct_pair(user.id, peer.id),
-            )
-            .options(*message_options())
-            .order_by(CommunityMessage.created_at.desc(), CommunityMessage.id.desc())
-            .limit(1)
+    message_id_to_peer = {
+        row.id: row.peer_id
+        for row in db.execute(
+            select(ranked.c.id, ranked.c.peer_id).where(ranked.c.rank == 1)
         )
-        if last_message is None:
-            continue
-        unread_count = db.scalar(
-            select(func.count())
-            .select_from(CommunityMessage)
+    }
+    messages_by_id = {
+        message.id: message
+        for message in db.scalars(
+            select(CommunityMessage)
+            .options(*message_options())
+            .where(CommunityMessage.id.in_(message_id_to_peer.keys()))
+        )
+    }
+    last_message_by_peer = {
+        peer: messages_by_id[message_id]
+        for message_id, peer in message_id_to_peer.items()
+        if message_id in messages_by_id
+    }
+
+    unread_by_peer = dict(
+        db.execute(
+            select(CommunityMessage.sender_id, func.count())
             .where(
                 CommunityMessage.channel == "direct",
-                CommunityMessage.sender_id == peer.id,
+                CommunityMessage.sender_id.in_(peer_ids),
                 CommunityMessage.recipient_id == user.id,
                 CommunityMessage.read_at.is_(None),
             )
-        )
+            .group_by(CommunityMessage.sender_id)
+        ).all()
+    )
+
+    conversations: list[ConversationOut] = []
+    for peer_id_value in peer_ids:
+        peer = peers_by_id.get(peer_id_value)
+        last_message = last_message_by_peer.get(peer_id_value)
+        if peer is None or last_message is None:
+            continue
         conversations.append(
             ConversationOut(
                 user=public_user(peer),
                 last_message=message_out(last_message),
-                unread_count=unread_count or 0,
+                unread_count=unread_by_peer.get(peer_id_value, 0),
             )
         )
     return conversations

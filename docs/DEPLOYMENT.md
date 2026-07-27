@@ -86,7 +86,15 @@ registrado como `smtp_send_failed` o `smtp_not_configured` en los logs.
 
 ## Copia y restauración
 
-Si se vuelve a autoalojar Postgres en un VPS:
+**Automatizado**: `.github/workflows/backup.yml` corre un `pg_dump` todos los
+domingos (también se puede disparar a mano desde la pestaña Actions →
+"Backup semanal de la base de datos" → Run workflow) y sube el resultado como
+artifact con 12 semanas de retención. Requiere el secret de repo
+`SUPABASE_DATABASE_URL` (Settings → Secrets and variables → Actions) con la
+misma cadena de conexión del pooler en modo session. Sin ese secret el
+workflow falla explícitamente en vez de fallar en silencio.
+
+Manual, si se vuelve a autoalojar Postgres en un VPS:
 
 ```sh
 docker compose -f compose.prod.yaml exec -T postgres \

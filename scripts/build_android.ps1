@@ -67,6 +67,13 @@ try {
         throw "No se pudo limpiar la compilación Android anterior."
     }
     $devBuildFlag = if ($Flavor -eq "dev") { "true" } else { "false" }
+    if ($Flavor -ne "dev" -and $devBuildFlag -eq "true") {
+        # No debiera poder pasar nunca (devBuildFlag se deriva de Flavor arriba
+        # mismo), pero si alguien lo cambia a futuro para aceptar un override
+        # manual, esto evita que un build "prod" termine exponiendo el
+        # selector de servidor http:// sin cifrar a usuarios reales.
+        throw "DEV_BUILD no puede ser true para el flavor '$Flavor'."
+    }
     & $flutter build apk "--$buildMode" --flavor $Flavor "--dart-define=API_BASE_URL=$ApiBaseUrl" "--dart-define=DEV_BUILD=$devBuildFlag"
     if ($LASTEXITCODE -ne 0) {
         throw "La compilación Android falló con código $LASTEXITCODE"
