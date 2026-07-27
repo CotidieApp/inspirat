@@ -43,29 +43,39 @@ teléfono y copia obligatoriamente el resultado a
   -ApiBaseUrl "http://192.168.4.200:8000/api/v1"
 ```
 
-## Clave y versión firmada
+El script acepta `-Flavor` (`dev` por defecto) y el switch `-Release` para
+compilar la version publica firmada; ver la seccion siguiente. Verifica el
+icono y la etiqueta de la app con `aapt2 dump badging` (no con nombres de
+archivo literales), porque el shrinker de Android ofusca los nombres de los
+recursos `res/` en builds de release — los assets de Flutter
+(`assets/flutter_assets/...`) no se ven afectados por esto.
+
+## Clave y version firmada
+
+**Ya existe un keystore real para este workspace** en
+`mobile/android/app/upload-keystore.jks` (creado 2026-07-26, alias `upload`),
+con `mobile/android/key.properties` apuntando a el. Ambos estan en
+`.gitignore` — respaldalos tu mismo en dos copias cifradas fuera del repo
+(ej. gestor de contraseñas + otra copia offline). Si se pierden, no vas a
+poder publicar una actualizacion firmada igual que las versiones ya
+distribuidas; NO generes un keystore nuevo salvo que confirmes que el actual
+se perdio de verdad.
+
+Compila la version publica contra la API real con el script integrado:
 
 ```powershell
-keytool -genkeypair -v -keystore "$env:USERPROFILE\inspirat-upload.jks" `
-  -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+.\scripts\build_android.ps1 `
+  -ApiBaseUrl "https://inspirat-api.onrender.com/api/v1" `
+  -Flavor prod -Release
 ```
 
-Crea `mobile/android/key.properties` (está ignorado por Git):
-
-```properties
-storePassword=CAMBIAR
-keyPassword=CAMBIAR
-keyAlias=upload
-storeFile=C:\\Users\\TU_USUARIO\\inspirat-upload.jks
-```
-
-Compila contra una API HTTPS:
+O manualmente:
 
 ```powershell
 flutter build apk --release --flavor prod `
-  --dart-define=API_BASE_URL=https://api.tudominio.cl/api/v1
+  --dart-define=API_BASE_URL=https://inspirat-api.onrender.com/api/v1
 flutter build appbundle --release --flavor prod `
-  --dart-define=API_BASE_URL=https://api.tudominio.cl/api/v1
+  --dart-define=API_BASE_URL=https://inspirat-api.onrender.com/api/v1
 ```
 
 Salidas esperadas:
@@ -73,6 +83,11 @@ Salidas esperadas:
 - `build/app/outputs/flutter-apk/app-prod-release.apk`
 - `build/app/outputs/bundle/prodRelease/app-prod-release.aab`
 
-Conserva el keystore y sus contraseñas en dos copias cifradas. Perderlo puede
-impedir actualizar la aplicación publicada. Incrementa `version` en
-`pubspec.yaml` (`versionName+versionCode`) en cada publicación.
+Verifica la firma con `apksigner verify --print-certs <apk>`: debe mostrar
+`CN=inspiraT`, no el certificado de depuracion de Android. Incrementa
+`version` en `pubspec.yaml` (`versionName+versionCode`) en cada publicacion.
+
+Si en el futuro se quiere publicar en Google Play, el `.aab` (no el `.apk`) es
+lo que pide la Play Console, y falta ademas: cuenta de desarrollador (pago
+unico), ficha de la tienda, cuestionario de clasificacion de contenido y
+politica de privacidad publica. No se hizo en esta sesion.

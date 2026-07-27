@@ -1,9 +1,13 @@
 param(
     [string]$ApiBaseUrl = "http://192.168.4.200:8000/api/v1",
+    [string]$Flavor = "dev",
+    [switch]$Release,
     [string]$Destination = (
         "G:\Mi unidad\insp{0}raT\Installer APK v2" -f [char]0x00ED
     )
 )
+
+$buildMode = if ($Release) { "release" } else { "debug" }
 
 $ErrorActionPreference = "Stop"
 $workspace = Split-Path -Parent $PSScriptRoot
@@ -62,7 +66,7 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "No se pudo limpiar la compilación Android anterior."
     }
-    & $flutter build apk --debug --flavor dev "--dart-define=API_BASE_URL=$ApiBaseUrl"
+    & $flutter build apk "--$buildMode" --flavor $Flavor "--dart-define=API_BASE_URL=$ApiBaseUrl"
     if ($LASTEXITCODE -ne 0) {
         throw "La compilación Android falló con código $LASTEXITCODE"
     }
@@ -70,35 +74,66 @@ try {
     Pop-Location
 }
 
-$source = Join-Path $mobile "build\app\outputs\flutter-apk\app-dev-debug.apk"
+$source = Join-Path $mobile "build\app\outputs\flutter-apk\app-$Flavor-$buildMode.apk"
 if (-not (Test-Path -LiteralPath $source)) {
     throw "Flutter terminó sin generar el APK esperado: $source"
 }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+# Recursos empacados por Flutter (assets/flutter_assets/...): el shrinker de
+# Android no los toca, sus rutas son estables en debug y en release.
 $requiredEntries = @(
     "assets/flutter_assets/FontManifest.json",
     "assets/flutter_assets/fonts/MaterialIcons-Regular.otf",
-    "assets/flutter_assets/assets/branding/icon-512x512.png",
-    "res/mipmap-mdpi-v4/ic_launcher.png",
-    "res/mipmap-xxxhdpi-v4/ic_launcher.png"
+    "assets/flutter_assets/assets/branding/icon-512x512.png"
 )
 $exactEntries = @{
     "assets/flutter_assets/assets/branding/icon-512x512.png" = (
         Join-Path $mobile "assets\branding\icon-512x512.png"
     )
-    "res/mipmap-xxxhdpi-v4/ic_launcher.png" = (
-        Join-Path $mobile (
-            "android\app\src\main\res\mipmap-xxxhdpi\ic_launcher.png"
-        )
-    )
 }
+
+# El icono de lanzador SI es un recurso Android (res/mipmap-*): en release,
+# shrinkResources ofusca esos nombres de archivo (ic_launcher.png -> 9w.png),
+# así que se resuelve la ruta real vía aapt2 en vez de asumir un nombre fijo.
+$sdkRoot = $env:ANDROID_HOME
+if (-not $sdkRoot) { $sdkRoot = $env:ANDROID_SDK_ROOT }
+if (-not $sdkRoot) { $sdkRoot = Join-Path $env:LOCALAPPDATA "Android\Sdk" }
+$aapt2 = Get-ChildItem -Path (Join-Path $sdkRoot "build-tools") -Filter "aapt2.exe" -Recurse -ErrorAction SilentlyContinue |
+    Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+if (-not $aapt2) {
+    throw "No se encontró aapt2 en $sdkRoot\build-tools; no se puede verificar el icono del APK."
+}
+$badging = & $aapt2 dump badging $source 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw "aapt2 no pudo leer el APK generado:`n$badging"
+}
+$iconEntries = $badging | Select-String -Pattern "^application-icon-(160|640):'(.+)'$"
+if ($iconEntries.Count -lt 2) {
+    throw "El APK no declara icono de lanzador para mdpi y xxxhdpi."
+}
+$appLabel = "insp{0}raT" -f [char]0x00ED
+$expectedLabel = if ($Flavor -eq "dev") { "$appLabel dev" } else { $appLabel }
+$labelMatch = $badging | Select-String -Pattern "^application-label:'(.+)'$" | Select-Object -First 1
+if (-not $labelMatch -or $labelMatch.Matches[0].Groups[1].Value -ne $expectedLabel) {
+    $actual = if ($labelMatch) { $labelMatch.Matches[0].Groups[1].Value } else { "(ninguna)" }
+    throw "Etiqueta de app inesperada para el flavor '$Flavor': se esperaba '$expectedLabel', se obtuvo '$actual'."
+}
+$iconPaths = $iconEntries | ForEach-Object { $_.Matches[0].Groups[2].Value }
+
 $archive = [System.IO.Compression.ZipFile]::OpenRead($source)
 try {
     foreach ($entryName in $requiredEntries) {
         $entry = $archive.GetEntry($entryName)
         if ($null -eq $entry -or $entry.Length -eq 0) {
             throw "El APK está incompleto; falta el recurso obligatorio: $entryName"
+        }
+    }
+    foreach ($iconPath in $iconPaths) {
+        $entry = $archive.GetEntry($iconPath)
+        if ($null -eq $entry -or $entry.Length -eq 0) {
+            throw "El icono que aapt2 declara ($iconPath) no existe en el APK."
         }
     }
     foreach ($entryName in $exactEntries.Keys) {
@@ -129,7 +164,12 @@ if (-not (Test-Path -LiteralPath "G:\")) {
 }
 
 New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-$target = Join-Path $Destination "inspirat-0.1.0-phone-wifi-debug.apk"
+$targetName = if ($Flavor -eq "dev" -and -not $Release) {
+    "inspirat-0.1.0-phone-wifi-debug.apk"
+} else {
+    "inspirat-0.1.0-$Flavor-$buildMode.apk"
+}
+$target = Join-Path $Destination $targetName
 Copy-Item -LiteralPath $source -Destination $target -Force
 
 $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash
