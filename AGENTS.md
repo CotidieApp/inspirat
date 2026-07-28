@@ -20,16 +20,19 @@ Historial de intervenciones del asistente en el repo.
 - `backend/pyproject.toml`: `httpx` movido de `dev` a las dependencias principales — ya se usaba en produccion via el nuevo modulo, pero antes solo estaba declarado como dependencia de test/dev (el `Dockerfile` corre `pip install .` sin extras, asi que el contenedor real de Render no lo habria tenido instalado).
 - `.env.example`: documentada la variable nueva.
 - `.env.production` (no versionado): se agrego `INSPIRAT_RESEND_API_KEY` con el mismo valor que ya estaba en `INSPIRAT_SMTP_PASSWORD` (es la misma API key de Resend); las variables `INSPIRAT_SMTP_*` se dejaron como estaban, sin uso mientras la nueva este presente.
-- **Pendiente de accion manual del usuario**: agregar `INSPIRAT_RESEND_API_KEY` como variable de entorno en el dashboard de Render (Environment del servicio `inspirat-api`) — el agente no tiene acceso a Render y no puede hacerlo. Sin este paso el fix no toma efecto en produccion aunque el codigo ya este desplegado.
+- El usuario agrego `INSPIRAT_RESEND_API_KEY` en Render y confirmo el redeploy (push + variable de entorno nueva).
+- `docs/DEPLOYMENT.md` y `docs/ROADMAP.md` (limpieza de paso, no urgente pero detectada durante esta misma entrada): describian el correo saliente como "Resend vía relay SMTP" con advertencias especificas sobre Gmail — quedaron desactualizadas por el cambio de arriba. Se reescribieron para reflejar que el mecanismo real hoy es la API HTTP de Resend, con SMTP como respaldo solo para desarrollo/Mailpit.
 
 **Validacion:**
 - `pytest` 32/32 sin cambios (los tests existentes mockean `send_email` directamente, no dependen del mecanismo interno) y `ruff check` limpio.
 - Probado en vivo con las credenciales reales de produccion: `httpx.post` directo a la API de Resend desde este equipo (200 OK) y luego `send_email()` completo con el modulo modificado (con las variables de entorno de produccion inyectadas manualmente) — ambos correos de prueba confirmados recibidos en la bandeja real del usuario (revisado por busqueda directa en Gmail, no solo por el codigo de retorno).
+- Tras el push y que el usuario agregara la variable en Render: CI en verde (`backend` 59s, `android` 5m18s, incluido el `docker build` real con `httpx` ya en dependencias principales). `POST /auth/password/forgot` contra el servicio real respondio en 0.94s (antes 20.7s) y el codigo de 6 digitos se confirmo recibido en Gmail — extremo a extremo contra produccion real, no solo en teoria.
 
 **Archivos Modificados:**
 - `backend/app/email.py`, `backend/app/config.py`, `backend/pyproject.toml`
 - `.env.example`
 - `.env.production` (no versionado)
+- `docs/DEPLOYMENT.md`, `docs/ROADMAP.md`
 - AGENTS.md
 
 ### [2026-07-27] 6. Sentry (crash reporting), UptimeRobot y bug de build con plugins Kotlin nativos

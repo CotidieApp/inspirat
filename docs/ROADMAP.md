@@ -8,8 +8,9 @@
   correcta y guardan la rama anterior del capítulo en el historial; falta
   comparación y combinación visual.
 - Exporta TXT, Markdown y PDF; DOCX y EPUB irán al worker.
-- El correo saliente (SMTP) ya se usa para restablecer contraseña; adjuntos y
-  MinIO siguen sin interfaz (infraestructura provisionada, sin funcionalidad).
+- El correo saliente (API HTTP de Resend, con SMTP como respaldo en
+  desarrollo) ya se usa para restablecer contraseña; adjuntos y MinIO siguen
+  sin interfaz (infraestructura provisionada, sin funcionalidad).
 - Hay chat grupal para cuentas autenticadas, mensajes directos y una consola
   local de pruebas. Antes de abrir registros públicos faltan bloqueo, denuncia,
   moderación y auditoría; la consola local no es un panel de moderación.

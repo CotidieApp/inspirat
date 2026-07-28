@@ -7,20 +7,22 @@
   El plan Free "duerme" tras inactividad (la primera petición después puede
   tardar ~50s).
 - **Base de datos**: Supabase Postgres, pooler en modo *session* (puerto 5432).
-- **Correo saliente**: Resend vía relay SMTP. Mientras no se verifique un
-  dominio propio en Resend, solo se puede enviar al correo de la cuenta
-  Resend (remitente `onboarding@resend.dev`). Se intentó cambiar a Gmail
-  SMTP directo el 2026-07-27 (evita la exigencia de dominio) pero **Render no
-  logra conectar a `smtp.gmail.com` en absoluto** — `OSError: [Errno 101]
-  Network is unreachable`, 100% reproducible, confirmado en los logs de
-  Render con credenciales ya probadas y funcionando desde otra red. Es un
-  bloqueo de red de la plataforma hacia SMTP directo de proveedores de
-  webmail de consumo (Gmail/Outlook/etc.), no un problema de configuración —
-  no reintentar esta ruta sin cambiar de proveedor de hosting. Alternativa
-  real pendiente de evaluar: un ESP con verificación de remitente individual
-  en vez de dominio completo (ej. SendGrid tiene "Single Sender
-  Verification": verificas un solo correo, no un dominio, y el envío sale
-  por su relay SMTP — que Render sí puede alcanzar, igual que con Resend).
+- **Correo saliente**: Resend vía su **API HTTP** (`INSPIRAT_RESEND_API_KEY`,
+  puerto 443), no SMTP. Mientras no se verifique un dominio propio en Resend,
+  solo se puede enviar al correo de la cuenta Resend (remitente
+  `onboarding@resend.dev`). Se probaron dos rutas SMTP antes de llegar aquí:
+  Gmail SMTP directo (`smtp.gmail.com`) — Render no lograba conectar en
+  absoluto (`OSError: [Errno 101] Network is unreachable`, 100% reproducible
+  con credenciales ya confirmadas funcionando desde otra red) — y luego
+  Resend por su propio relay SMTP (`smtp.resend.com:587`), que en un primer
+  momento funcionó pero después empezó a fallar por timeout desde el mismo
+  contenedor de Render sin cambio de configuración de por medio. El patrón
+  (HTTPS hacia esos mismos servicios nunca fallaba) apunta a que el egreso
+  SMTP saliente es lo poco confiable en la red de Render, no las credenciales
+  ni el proveedor — de ahí el cambio a la API HTTP de Resend el 2026-07-27,
+  que reutiliza el mismo puerto 443 que ya usa el resto del tráfico saliente
+  de la app. `app/email.py` sigue soportando SMTP como fallback (usado en
+  desarrollo con Mailpit) si `INSPIRAT_RESEND_API_KEY` no está definida.
 - **Worker**: no desplegado. Hoy no hace nada real (revisa `app/worker.py`);
   desplegarlo cuando exista una tarea real que procesar.
 - **Redis**: no desplegado. Nada en el código de la API lo usa todavía; solo
@@ -79,31 +81,36 @@ conexión (nunca en logs, nunca commiteada).
 
 ## Correo saliente real
 
-Mailpit es solo para desarrollo. En producción se usa un proveedor SMTP real
-(hoy Resend) en el `.env`:
+Mailpit es solo para desarrollo. En producción (Render) se usa la **API HTTP
+de Resend** en el `.env`, no SMTP:
 
 ```text
-INSPIRAT_SMTP_HOST=smtp.resend.com
-INSPIRAT_SMTP_PORT=587
-INSPIRAT_SMTP_USE_TLS=true
-INSPIRAT_SMTP_USERNAME=resend
-INSPIRAT_SMTP_PASSWORD=...
+INSPIRAT_RESEND_API_KEY=re_...
 INSPIRAT_SMTP_FROM_EMAIL=onboarding@resend.dev
+INSPIRAT_SMTP_FROM_NAME=inspíraT
 ```
 
-**No usar Gmail (`smtp.gmail.com`) como host mientras el backend siga en
-Render**: se probó el 2026-07-27 con credenciales válidas (autenticación
-confirmada desde otra red) y Render no logra conectar en absoluto —
-`OSError: [Errno 101] Network is unreachable`, reproducible siempre. Es un
-bloqueo de red de la plataforma, no de configuración. Si se quiere salir de
-la restricción de "solo el dueño de la cuenta" de Resend sin comprar un
-dominio, la ruta a evaluar es un ESP con verificación de remitente
-individual (ej. SendGrid "Single Sender Verification"), no SMTP directo a
-un proveedor de webmail de consumo.
+`send_email()` (`app/email.py`) usa la API HTTP de Resend
+(`https://api.resend.com/emails`, puerto 443) cuando `INSPIRAT_RESEND_API_KEY`
+está definida. Si no lo está, cae a SMTP con las variables `INSPIRAT_SMTP_*`
+de siempre (`INSPIRAT_SMTP_HOST`, `_PORT`, `_USE_TLS`, `_USERNAME`,
+`_PASSWORD`) — esa ruta sigue existiendo para desarrollo local con Mailpit,
+pero **no se recomienda para Render**: tanto Gmail SMTP directo
+(`OSError: [Errno 101] Network is unreachable`, 100% reproducible) como el
+propio relay SMTP de Resend (`smtp.resend.com:587`, timeouts intermitentes)
+resultaron poco confiables desde ese host, mientras que la misma API de
+Resend por HTTPS nunca falló.
 
-Sin esto, `POST /auth/password/forgot` sigue respondiendo con éxito (para no
-revelar si la cuenta existe) pero el correo con el código nunca sale; queda
-registrado como `smtp_send_failed` o `smtp_not_configured` en los logs.
+Si se quiere salir de la restricción de "solo el dueño de la cuenta" de
+Resend sin comprar un dominio propio, la ruta a evaluar es un ESP con
+verificación de remitente individual (ej. SendGrid "Single Sender
+Verification") — su API HTTP en vez de su SMTP, por el mismo motivo de
+arriba.
+
+Sin ninguna de las dos vías configurada, `POST /auth/password/forgot` sigue
+respondiendo con éxito (para no revelar si la cuenta existe) pero el correo
+con el código nunca sale; queda registrado como `resend_api_send_failed`,
+`smtp_send_failed` o `email_not_configured` en los logs.
 
 ## Copia y restauración
 
