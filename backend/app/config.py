@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
     smtp_from_email: str = "no-reply@inspirat.app"
     smtp_from_name: str = "inspíraT"
+    # Preferido sobre smtp_* cuando esta presente: usa la API HTTP de Resend
+    # (puerto 443) en vez de SMTP directo, porque el egreso SMTP (587) desde
+    # el host de Render demostro ser intermitente/bloqueado en la practica
+    # (timeouts reproducibles tanto hacia Gmail como hacia el propio Resend),
+    # mientras que HTTPS hacia la misma API de Resend no presento ese problema.
+    resend_api_key: str | None = None
     password_reset_code_minutes: int = 15
 
     @property

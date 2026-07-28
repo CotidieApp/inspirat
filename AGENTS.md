@@ -8,6 +8,30 @@ Historial de intervenciones del asistente en el repo.
 - Esta obligacion aplica aunque el usuario pida tocar solo lo estrictamente necesario: el registro en `AGENTS.md` se considera parte estrictamente necesaria de cualquier edicion del repo.
 - Si una instruccion del usuario prohibe explicitamente editar `AGENTS.md`, el agente debe pedir aclaracion antes de modificar otros archivos.
 
+### [2026-07-27] 7. Correo de reset de contrasena: SMTP no llegaba desde Render, se cambio a la API HTTP de Resend
+
+**Planificacion:**
+- Continuacion de la entrada 6/anterior: tras volver a Resend por SMTP, el correo de reset dejo de llegar de nuevo (esta vez con `TimeoutError` en el puerto 587 en vez del `OSError 101` que daba Gmail), pese a que Resend seguia siendo alcanzable desde este equipo y su status page marcaba todo operativo. Antes de tocar codigo se reprodujo el problema en vivo contra el servicio real: `POST /auth/password/forgot` contra `https://inspirat-api.onrender.com` respondio 202 en ~20.7s (mucho mas que el timeout de 10s de `smtplib`, y la respuesta es generica a proposito — no revela si el envio interno fallo), y se confirmo por Gmail (busqueda directa en la bandeja, incluyendo spam/trash) que el codigo nunca llego.
+- Diagnostico: el patron (funciona por HTTPS desde este equipo, falla por SMTP/587 desde el contenedor de Render, con dos proveedores SMTP distintos en dias distintos) apunta a que el egreso SMTP especifico es lo poco confiable en la red de Render, no las credenciales ni el proveedor. La solucion mas robusta no es cambiar de proveedor otra vez sino dejar de depender de SMTP: Resend expone una API HTTP simple (`POST https://api.resend.com/emails`, Bearer token) sobre el mismo puerto 443 que ya usa todo el resto del trafico saliente de la app (Supabase, GitHub Actions, etc.), que nunca broto el problema.
+
+**Ejecucion:**
+- `backend/app/email.py`: reescrito con `_send_via_resend_api` (nuevo, usa `httpx.post` contra la API HTTP de Resend) y `_send_via_smtp` (la logica anterior, intacta). `send_email` ahora prioriza `settings.resend_api_key` si esta definida; si no, cae a `smtp_host` (SMTP) como antes; si ninguna esta configurada, solo loguea (comportamiento sin cambios para desarrollo con Mailpit, que sigue usando SMTP).
+- `backend/app/config.py`: nuevo campo `resend_api_key: str | None` (env `INSPIRAT_RESEND_API_KEY`), documentado inline el porque se prefiere sobre `smtp_*`.
+- `backend/pyproject.toml`: `httpx` movido de `dev` a las dependencias principales — ya se usaba en produccion via el nuevo modulo, pero antes solo estaba declarado como dependencia de test/dev (el `Dockerfile` corre `pip install .` sin extras, asi que el contenedor real de Render no lo habria tenido instalado).
+- `.env.example`: documentada la variable nueva.
+- `.env.production` (no versionado): se agrego `INSPIRAT_RESEND_API_KEY` con el mismo valor que ya estaba en `INSPIRAT_SMTP_PASSWORD` (es la misma API key de Resend); las variables `INSPIRAT_SMTP_*` se dejaron como estaban, sin uso mientras la nueva este presente.
+- **Pendiente de accion manual del usuario**: agregar `INSPIRAT_RESEND_API_KEY` como variable de entorno en el dashboard de Render (Environment del servicio `inspirat-api`) — el agente no tiene acceso a Render y no puede hacerlo. Sin este paso el fix no toma efecto en produccion aunque el codigo ya este desplegado.
+
+**Validacion:**
+- `pytest` 32/32 sin cambios (los tests existentes mockean `send_email` directamente, no dependen del mecanismo interno) y `ruff check` limpio.
+- Probado en vivo con las credenciales reales de produccion: `httpx.post` directo a la API de Resend desde este equipo (200 OK) y luego `send_email()` completo con el modulo modificado (con las variables de entorno de produccion inyectadas manualmente) — ambos correos de prueba confirmados recibidos en la bandeja real del usuario (revisado por busqueda directa en Gmail, no solo por el codigo de retorno).
+
+**Archivos Modificados:**
+- `backend/app/email.py`, `backend/app/config.py`, `backend/pyproject.toml`
+- `.env.example`
+- `.env.production` (no versionado)
+- AGENTS.md
+
 ### [2026-07-27] 6. Sentry (crash reporting), UptimeRobot y bug de build con plugins Kotlin nativos
 
 **Planificacion:**
